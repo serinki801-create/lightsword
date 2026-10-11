@@ -1,0 +1,21 @@
+export TARGET = iphone:clang:latest:16.0
+export ARCHS = arm64
+export SWIFT_OPTFLAG = -Onone -num-threads 1
+
+$(info [DEBUG] user Makefile: ARCHS=$(ARCHS))
+
+include $(THEOS)/makefiles/common.mk
+
+$(info [DEBUG] after theos common: ARCHS=$(ARCHS) TARGET_ARCHS=$(TARGET_ARCHS))
+
+APPLICATION_NAME = natsuk1
+natsuk1_FILES = $(wildcard *.m) $(wildcard *.c)
+natsuk1_SWIFT_FILES = $(wildcard *.swift)
+natsuk1_FRAMEWORKS = UIKit Foundation CoreGraphics IOKit
+natsuk1_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
+natsuk1_SWIFTFLAGS = -import-objc-header $(PWD)/Bridging-Header.h
+natsuk1_INSTALL_TARGET_PROCESSES = natsuk1
+natsuk1_CODESIGN_FLAGS = -S
+natsuk1_RESOURCE_FILES = Info.plist
+
+include $(THEOS_MAKE_PATH)/application.mk

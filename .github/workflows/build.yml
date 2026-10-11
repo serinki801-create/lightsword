@@ -1,0 +1,64 @@
+name: build-kstest
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile C objects
+        run: |
+          set -e
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          mkdir -p build
+          for f in $(find Sources -type f \( -name '*.c' -o -name '*.m' \)); do
+            echo "CC $f"
+            xcrun clang -c "$f" -o "build/$(echo "$f" | tr '/' '_').o" \
+              -target arm64-apple-ios16.0 \
+              -isysroot "$SDK" \
+              -O2 -Wno-everything \
+              -ISources/Core -ISources/Diag -ISources/Probes -ISources/Kernel -ISources/Legacy
+          done
+          ls build/*.o
+
+      - name: Compile Swift and link
+        run: |
+          set -e
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          xcrun swiftc \
+            -target arm64-apple-ios16.0 \
+            -sdk "$SDK" \
+            -O \
+            -parse-as-library \
+            -module-name natsuk1 \
+            -import-objc-header Bridging-Header.h \
+            -Xcc -ISources/Core -Xcc -ISources/Diag -Xcc -ISources/Probes -Xcc -ISources/Kernel -Xcc -ISources/Legacy \
+            $(find Sources/App -name '*.swift') build/*.o \
+            -framework Foundation \
+            -framework UIKit \
+            -framework SwiftUI \
+            -framework IOKit \
+            -framework CoreFoundation \
+            -o build/natsuk1
+
+      - name: Package ipa
+        run: |
+          set -e
+          rm -rf Payload natsuk1.ipa
+          mkdir -p Payload/natsuk1.app
+          cp build/natsuk1 Payload/natsuk1.app/natsuk1
+          chmod +x Payload/natsuk1.app/natsuk1
+          cp Info.plist Payload/natsuk1.app/Info.plist
+          printf 'APPL????' > Payload/natsuk1.app/PkgInfo
+          zip -qr natsuk1.ipa Payload
+          echo "=== IPA STRUCTURE ==="
+          unzip -l natsuk1.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: natsuk1-ipa
+          path: natsuk1.ipa

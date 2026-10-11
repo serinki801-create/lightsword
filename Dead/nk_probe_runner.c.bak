@@ -1,0 +1,160 @@
+// language: C, file: nk_probe_runner.c, target: iOS 26.2 / 23C55 / arm64e, Theos app sandbox
+// LiveContainer runs the guest INSIDE the host process: any guest death (SIGSEGV,
+// SIGKILL by sandbox/jetsam, guard _exit) kills the container itself. To
+// diagnose without losing the container every press, run each probe in a
+// fork()ed child. The child must NOT touch ObjC/Swift: detach the log bridge
+// first (nk_set_log(NULL)) and use the C file logger (trace_log, fsync'd).
+// Parent survives and decodes waitpid status: signal, code, exit value.
+
+#include "exploit.h"
+#include <sys/wait.h>
+#include <unistd.h>
+#include <signal.h>
+#include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+
+extern void trace_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+/* child-side stage breadcrumbs: raw write(2) AND a stage file. write(2) is
+ * visible in LiveContainer's console; the file survives even SIGKILL and is
+ * read back by the parent after waitpid. Purely for diagnosis. */
+static const char *g_stage_path = "/tmp/nk_child_stage.txt";
+
+static void child_stage(int n)
+{
+    char c = (char)('0' + n);
+    write(2, "[CHILD] stage\n", 14);
+    char b[2]; b[0] = c; b[1] = '\n';
+    int fd = open(g_stage_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { if (write(fd, b, 2) < 0) { } close(fd); }
+}
+
+/* probe ids run in the child */
+enum { PR_NONE = 0, PR_GUARD_TEST, PR_T0E, PR_DUMMYNET, PR_T2FRAME };
+
+static void runner_log(const char *stage)
+{
+    /* pure-C stage marker; survives any death mode (fsync per line) */
+    trace_log("[RUNNER] %s pid=%d\n", stage, (int)getpid());
+}
+
+static const char *sig_name(int s)
+{
+    switch (s) {
+    case SIGSEGV: return "SIGSEGV";
+    case SIGBUS: return "SIGBUS";
+    case SIGILL: return "SIGILL";
+    case SIGABRT: return "SIGABRT";
+    case SIGKILL: return "SIGKILL";
+    case SIGTERM: return "SIGTERM";
+    case SIGPIPE: return "SIGPIPE";
+    case SIGTRAP: return "SIGTRAP";
+    default: return "SIG?";
+    }
+}
+
+/* child-side C-only log target: probe nk_logx calls land in Documents/trace.log
+ * (fsync'd) after the Swift bridge is detached — no ObjC in the child. */
+static void child_trace_log(const char *s)
+{
+    trace_log("%s\n", s);
+}
+
+/* returns 0 always; logs everything to Documents/trace.log AND the UI bridge */
+static int runner_parent_report(pid_t cpid, int rounds)
+{
+    int status = 0;
+    pid_t r = waitpid(cpid, &status, 0);
+    (void)r;
+    if (WIFEXITED(status)) {
+        nk_logx("RUNNER", "child pid=%d EXITED code=%d", cpid, WEXITSTATUS(status));
+        runner_log("child exited");
+    } else if (WIFSIGNALED(status)) {
+        int s = WTERMSIG(status);
+        nk_logx("RUNNER", "child pid=%d KILLED by signal=%d (%s)",
+                cpid, s, sig_name(s));
+        runner_log("child killed");
+        trace_log("[RUNNER] signal=%d (%s) — if this is SIGKILL, it is a sandbox/jetsam kill, not our SIGSEGV path\n",
+                  s, sig_name(s));
+    } else {
+        nk_logx("RUNNER", "child pid=%d WAIT status=0x%x", cpid, status);
+    }
+    /* read the child's stage breadcrumb back into the UI log */
+    {
+        int fd = open(g_stage_path, O_RDONLY);
+        if (fd >= 0) {
+            char b[8]; ssize_t n = read(fd, b, sizeof(b) - 1);
+            if (n > 0) { b[n] = 0;
+                char line[64]; int p = 0;
+                const char *s2 = b; while (*s2 && *s2 != '\n' && p < 30) line[p++] = *s2++;
+                line[p] = 0;
+                nk_logx("RUNNER", "child last stage = %s (1=entered 2=logger 3=guard; higher = inside probe)", line); }
+            else nk_logx("RUNNER", "child stage file empty (died before first stage?)");
+            close(fd);
+        } else {
+            nk_logx("RUNNER", "child stage file MISSING (fork failed to run child?)");
+        }
+    }
+    (void)rounds;
+    return 0;
+}
+
+int nk_probe_run_in_child(int probe_id, int rounds)
+{
+    nk_logx("RUNNER", "spawn child for probe=%d rounds=%d", probe_id, rounds);
+    runner_log("fork next");
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        nk_logx("RUNNER", "fork failed errno=%d", errno);
+        return -1;
+    }
+    if (pid == 0) {
+        /* CHILD: no ObjC/Swift from here down. */
+        child_stage(1);
+        nk_set_log(child_trace_log); /* pure-C logger instead of the Swift bridge */
+        child_stage(2);
+        nk_crash_guard_install(NULL); /* guard only ever runs in the child */
+        child_stage(3);
+        runner_log("child running");
+        switch (probe_id) {
+        case PR_GUARD_TEST:
+            nk_crash_guard_install(NULL);
+            trace_log("[RUNNER] guard test: deliberate NULL deref\n");
+            { volatile uint64_t *p = (volatile uint64_t *)(uintptr_t)0; (void)*p; }
+            _exit(77);
+        case PR_T0E:
+            _exit(nk_t0e_spike());
+        case PR_DUMMYNET:
+            _exit(nk_t2_dummynet_probe());
+        case PR_T2FRAME:
+            _exit(nk_t2_frame_probe(rounds));
+        default:
+            _exit(78);
+        }
+    }
+    return runner_parent_report(pid, rounds);
+}
+
+int nk_probe_guard_test(void)   { return nk_probe_run_in_child(PR_GUARD_TEST, 0); }
+int nk_probe_t0e(void)          { return nk_probe_run_in_child(PR_T0E, 0); }
+int nk_probe_dummynet(void)     { return nk_probe_run_in_child(PR_DUMMYNET, 0); }
+int nk_probe_t2frame(int r)     { return nk_probe_run_in_child(PR_T2FRAME, r > 0 ? r : 50); }
+
+/* fork() itself, no probe, no crash: child sleeps and exits 42.
+ * Expected parent log: "EXITED code=42" + stage file "1". If the parent instead
+ * hangs or LC dies, fork/waitpid is broken in this LiveContainer guest. */
+int nk_probe_fork_test(void)
+{
+    nk_logx("RUNNER", "fork-only test: child sleeps 1s, exits 42");
+    pid_t pid = fork();
+    if (pid < 0) { nk_logx("RUNNER", "fork failed errno=%d", errno); return -1; }
+    if (pid == 0) {
+        nk_set_log(NULL);            /* no logging at all in this child */
+        child_stage(1);
+        sleep(1);
+        _exit(42);
+    }
+    return runner_parent_report(pid, 0);
+}

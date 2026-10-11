@@ -1,0 +1,9 @@
+# ignore generated artifacts
+Artifacts/*
+!Artifacts/.gitkeep
+Packages/*.ipa
+packages/
+.theos/
+layout/.theos/
+/tmp
+Dead/*.deb

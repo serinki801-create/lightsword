@@ -1,0 +1,247 @@
+name: kcrecon
+
+on:
+  workflow_dispatch:
+    inputs:
+      src:
+        description: image file in repo root (kc.bin for kernelcache)
+        default: kc.bin
+
+jobs:
+  recon:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps
+        run: |
+          python3 -m pip install --quiet --user capstone 2>/dev/null || python3 -m pip install --quiet --break-system-packages capstone 2>/dev/null || true
+          python3 -c "import capstone; print('capstone', capstone.__version__)" || true
+
+      - name: recon
+        env:
+          RECON_SRC: ${{ inputs.src }}
+        run: |
+          python3 - <<'PY'
+          import struct, sys, os, pathlib, ctypes
+
+          ROOT = pathlib.Path('.')
+          MACHO = b'\xcf\xfa\xed\xfe'
+          COMPRESSION_LZFSE = 0x801
+
+          lib = None
+          try:
+              lib = ctypes.CDLL('/usr/lib/libcompression.dylib')
+              lib.compression_decode_buffer.restype = ctypes.c_size_t
+              lib.compression_decode_buffer.argtypes = [
+                  ctypes.c_void_p, ctypes.c_size_t,
+                  ctypes.c_void_p, ctypes.c_size_t,
+                  ctypes.c_void_p, ctypes.c_int]
+              print("libcompression loaded")
+          except Exception as e:
+              print("libcompression load failed:", e)
+
+          src = ROOT / os.environ.get('RECON_SRC', 'kc.bin')
+          if not src.exists():
+              sys.exit("source not found: %s" % src)
+          raw = src.read_bytes()
+          print("source:", src, "size:", len(raw), "head:", raw[:8].hex())
+
+          payload_magic = None
+          payload_data = raw
+          if raw[:4] == MACHO:
+              payload_data = raw
+              payload_magic = MACHO
+          else:
+              for magic in [b'bvx2', b'bvxn', b'bvx-', b'comp']:
+                  idx = raw.find(magic, 0x10)
+                  if idx != -1:
+                      payload_data = raw[idx:]
+                      payload_magic = magic
+                      break
+          if payload_magic is None:
+              sys.exit("cannot find payload magic")
+          print("payload magic:", payload_magic, "len:", len(payload_data))
+
+          def lzss(srcb, dst_size, plus):
+              out = bytearray(); i = 0; n = len(srcb)
+              while i < n and len(out) < dst_size:
+                  ctrl = srcb[i]; i += 1
+                  for bit in range(8):
+                      if len(out) >= dst_size or i >= n:
+                          break
+                      if ctrl & 1:
+                          out.append(srcb[i]); i += 1
+                      else:
+                          if i + 1 >= n:
+                              break
+                          ref = srcb[i] | (srcb[i+1] << 8); i += 2
+                          cnt = (ref >> 12) + 3
+                          off = (ref & 0xfff) + plus
+                          if off < 1:
+                              off = 1
+                          p = len(out) - off
+                          for _ in range(cnt):
+                              out.append(out[p]); p += 1
+                      ctrl >>= 1
+              return bytes(out)
+
+          def lzfse_one(buf, usize_hint):
+              if lib is None or len(buf) < 12:
+                  return None
+              if usize_hint <= 0 or usize_hint > (1 << 30):
+                  usize_hint = 1 << 29
+              cap = usize_hint + 65536
+              dst = ctypes.create_string_buffer(cap)
+              sb = ctypes.create_string_buffer(buf, len(buf))
+              n = lib.compression_decode_buffer(dst, cap, sb, len(buf), None, COMPRESSION_LZFSE)
+              if n > 0:
+                  return dst.raw[:n]
+              return None
+
+          data = None
+          if payload_magic == MACHO:
+              data = payload_data
+          elif payload_magic == b'comp':
+              usize = struct.unpack_from('<I', payload_data, 8)[0]
+              for plus in (1, 0):
+                  t = lzss(payload_data[16:], usize, plus)
+                  if t[:4] == MACHO:
+                      data = t
+                      print("comp lzss ok plus=%d -> %d" % (plus, len(t)))
+                      break
+          else:
+              # bvx2/bvxn/bvx- = LZFSE. Заголовок 12 байт:
+              #   [0:4]  magic
+              #   [4:8]  uncompressed_size (LE)
+              #   [8:12] compressed_size   (LE)
+              usize = struct.unpack_from('<I', payload_data, 4)[0]
+              csize = struct.unpack_from('<I', payload_data, 8)[0]
+              print("lzfse hdr: usize=%d csize=%d avail=%d" % (usize, csize, len(payload_data)))
+
+              # single stream, точная длина (csize может включать заголовок или нет)
+              if 0 < csize <= len(payload_data):
+                  for L in (csize, min(12 + csize, len(payload_data))):
+                      data = lzfse_one(payload_data[:L], usize)
+                      if data:
+                          print("lzfse single ok L=%d -> %d" % (L, len(data)))
+                          break
+              if data is None and len(payload_data) >= 12:
+                  data = lzfse_one(payload_data, usize)
+                  if data:
+                      print("lzfse single(full) ok -> %d" % len(data))
+
+              # chunked fallback: несколько независимых bvx2-блоков
+              if data is None:
+                  print("lzfse single failed, chunked scan...")
+                  parts = []
+                  i = 0
+                  n = len(payload_data)
+                  while i < n:
+                      idx = payload_data.find(b'bvx2', i)
+                      if idx == -1 or idx + 12 > n:
+                          break
+                      u = struct.unpack_from('<I', payload_data, idx + 4)[0]
+                      c = struct.unpack_from('<I', payload_data, idx + 8)[0]
+                      if 0 < c <= (n - idx) and 0 < u < (1 << 30):
+                          blk = lzfse_one(payload_data[idx:idx + c], u)
+                          if blk:
+                              parts.append(blk)
+                              i = idx + c
+                              continue
+                      i = idx + 4
+                  if parts:
+                      cand = b''.join(parts)
+                      print("lzfse chunked: %d blocks -> %d bytes" % (len(parts), len(cand)))
+                      if cand[:4] == MACHO:
+                          data = cand
+
+          if data is None or data[:4] != MACHO:
+              sys.exit("decompression failed (head=%r)" % (data[:8] if data else None))
+          pathlib.Path('kc_dec.bin').write_bytes(data)
+          print("mach-o ready, size:", len(data))
+
+          ncmd = struct.unpack_from('<I', data, 16)[0]
+          off = 32
+          segs = []
+          for _ in range(ncmd):
+              cmd, cmdsize = struct.unpack_from('<II', data, off)
+              if cmd == 0x19:
+                  name = data[off+8:off+24].rstrip(b'\0').decode('ascii', 'replace')
+                  vm, vs, fo, fs = struct.unpack_from('<QQQQ', data, off+24)
+                  segs.append((name, vm, vs, fo, fs))
+              off += cmdsize
+          print("segments:", [(s[0], hex(s[1])) for s in segs])
+
+          def va_to_off(va):
+              for name, vm, vs, fo, fs in segs:
+                  span = max(vs, fs)
+                  if vm <= va < vm + span:
+                      return fo + (va - vm), name
+              return None, None
+
+          TARGETS = [
+              0xfffffff0084904c0,
+              0xfffffff0084905a0,
+              0xfffffff0080616a4,
+              0xfffffff008491f40,
+          ]
+
+          hit = sum(1 for t in TARGETS if va_to_off(t)[0] is not None)
+          if hit == 0 and segs:
+              base = segs[0][1]
+              kind = "SPTM" if base == 0xfffffff01c210000 else \
+                     "TXM" if base == 0xfffffff02c210000 else \
+                     "kernelcache" if base <= 0xfffffff008000000 else "unknown"
+              sys.exit("WRONG IMAGE: base %#x looks like %s" % (base, kind))
+
+          lines = []
+          HAVE_CS = False
+          md = None
+          try:
+              import capstone as cs
+              md = cs.Cs(cs.CS_ARCH_ARM64, cs.CS_MODE_LITTLE_ENDIAN)
+              HAVE_CS = True
+          except Exception as e:
+              print("capstone unavailable:", e)
+
+          for t in TARGETS:
+              fo, seg = va_to_off(t)
+              if fo is None:
+                  lines.append("[skip] %#x not mapped" % t)
+                  continue
+              base = t - 0x80
+              chunk = data[fo-0x80:fo+0x80]
+              lines.append("")
+              lines.append("=== target %#x seg=%s window -0x80..+0x80 ===" % (t, seg))
+              if not HAVE_CS:
+                  for i in range(0, len(chunk), 4):
+                      w = struct.unpack_from('<I', chunk, i)[0]
+                      lines.append("%#018x: %08x" % (base + i, w))
+                  continue
+              feeds = []
+              for ins in md.disasm(chunk, base):
+                  s = ins.mnemonic + " " + ins.op_str
+                  mark = ""
+                  if ins.address == t:
+                      mark = "   <== TARGET"
+                  if ins.mnemonic.startswith(("aut", "ldra")) or ins.mnemonic in ("blr", "bra", "br", "cbz", "cbnz", "tbz", "tbnz"):
+                      mark += "   <<<"
+                  if ins.address < t and ins.op_str.startswith("x16,"):
+                      feeds.append((ins.address, s))
+                  lines.append("%#018x: %s%s" % (ins.address, s, mark))
+              for a, s in feeds[-5:]:
+                  lines.append("[feed-x16] %#x: %s" % (a, s))
+
+          out = "\n".join(lines)
+          pathlib.Path('recon.txt').write_text(out)
+          print(out)
+          PY
+
+      - name: upload recon
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kcrecon
+          path: recon.txt
