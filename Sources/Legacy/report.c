@@ -21,7 +21,7 @@ void nk_final_report(void) {
     nk_log("[report] generating final research artifact");
     const char *dir = report_outdir();
     char path[600];
-    snprintf(path, sizeof(path), "%s/natsuk1_final_report.json", dir);
+    snprintf(path, sizeof(path), "%s/srk801_final_report.json", dir);
     FILE *f = fopen(path, "w");
     if (!f) {
         nk_log("[report] failed to open %s", path);
@@ -33,7 +33,7 @@ void nk_final_report(void) {
     strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
 
     fprintf(f, "{\n");
-    fprintf(f, "  \"project\": \"natsuk1\",\n");
+    fprintf(f, "  \"project\": \"srk801\",\n");
     fprintf(f, "  \"version\": \"2.19-final\",\n");
     fprintf(f, "  \"timestamp\": \"%s\",\n", time_buf);
     fprintf(f, "  \"target\": {\n");
@@ -71,7 +71,7 @@ void nk_final_report(void) {
     fprintf(f, "  \"conclusion\": {\n");
     fprintf(f, "    \"sandbox_status\": \"hermetic\",\n");
     fprintf(f, "    \"viable_exploit_path\": \"requires panic-log slide or external kernelcache\",\n");
-    fprintf(f, "    \"slide_source\": \"panic-log or natsuk1_slide.txt in Documents\"\n");
+    fprintf(f, "    \"slide_source\": \"panic-log or srk801_slide.txt in Documents\"\n");
     fprintf(f, "  }\n");
     fprintf(f, "}\n");
     fclose(f);

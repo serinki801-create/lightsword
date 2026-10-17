@@ -13,5 +13,15 @@ void nk_jsbridge_log(const char *tag, const char *msg);
 void nk_jsbridge_status(const char *kv);
 int  nk_run_begin(const char *label);
 int  nk_run_current(void);
+/* W-T3 hunt convergence: dead probe candidates (page died mid-walk) */
+void nk_probe_mark_dead(void);
+int  nk_probe_dead_list(char *out, int cap);
+void nk_probe_dead_clear(void);
 int  nk_selftest_claim(int run);
 void nk_fatal_webcontent(void);
+
+void nk_iokit_fuzz(void);
+
+
+
+void nk_iogpu_oob_run(void);

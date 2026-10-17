@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Kernelcache recon for natsuk1.
+Kernelcache recon for srk801.
 Распаковывает IM4P/LZFSE (bvx2), парсит Mach-O arm64e,
 дизассемблирует окна вокруг адресов из паники и пишет recon.txt.
 """
@@ -156,7 +156,7 @@ except Exception as e:
     HAVE_CS = False
 
 out = []
-out.append('# natsuk1 kernelcache recon')
+out.append('# srk801 kernelcache recon')
 out.append('# source: %s (%d bytes)' % (src, len(data)))
 out.append('# slide from panic: 0x445fc000  (адреса ниже уже pre-slide)')
 out.append('# kernel text base pre-slide: 0xfffffff007004000')

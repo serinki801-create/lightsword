@@ -80,45 +80,20 @@ final class AppState: ObservableObject {
         start { return nk_detect_slide() == 0 }
     }
 
-    func aioB12() {
+    /* CVE-2025-24257 — deliberately tiny: one open + one call. */
+    func iogpuOob() {
         start {
-            nk_spray_e1()
-            nk_spray_iokit()
-            return nk_aio_uaf_b12(10, nil) == 0
+            nk_iogpu_oob_run()
+            return true
         }
     }
 
-    func t0eSpike() {
+    /* Row-dispatch + structured-path probe over IOGPU types 1..33. */
+    func iogpuProbe2() {
         start {
-            return nk_probe_t0e() == 0
+            nk_iogpu_probe2_run()
+            return true
         }
-    }
-
-    func t2FrameProbe() {
-        start {
-            return nk_probe_t2frame(50) == 0
-        }
-    }
-
-    func t2Dummynet() {
-        start {
-            return nk_probe_dummynet() == 0
-        }
-    }
-
-    func guardTest() {
-        start {
-            return nk_probe_guard_test() == 0
-        }
-    }
-
-    func resetProbes() {
-        nk_state_reset()
-        nk_jsbridge_log("STATE", "probe state reset; Guard/T0e/Dummynet/Frame re-enabled")
-    }
-
-    func pacSelfTest() {
-        start { return nk_pac_oracle_selftest(10, nil) != 0 }
     }
 
     func respring() {

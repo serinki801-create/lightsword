@@ -53,7 +53,7 @@ static const char *docs_dir(void) {
 }
 
 static void print_docs_path(void) {
-    nk_log("[KASLR] клади panic.log / natsuk1_slide.txt сюда:");
+    nk_log("[KASLR] клади panic.log / srk801_slide.txt сюда:");
     nk_log("[KASLR]   %s", docs_dir());
 }
 
@@ -147,7 +147,7 @@ static int load_panic_file(const char *path) {
 /* ---------- slide.txt: slide=0x.. или base=0x.. ---------- */
 static int load_slide_file(void) {
     char p[700];
-    snprintf(p, sizeof(p), "%s/natsuk1_slide.txt", docs_dir());
+    snprintf(p, sizeof(p), "%s/srk801_slide.txt", docs_dir());
     char buf[4096];
     if (slurp(p, buf, sizeof(buf)) < 0) return -1;
 
@@ -410,7 +410,7 @@ int nk_detect_slide(void) {
 
     nk_log("[-] KASLR: slide НЕ вычислен. Источники исчерпаны.");
     print_docs_path();
-    nk_log("[-] Быстрее: %s/natsuk1_slide.txt со строкой: slide=0x2b584000", docs_dir());
+    nk_log("[-] Быстрее: %s/srk801_slide.txt со строкой: slide=0x2b584000", docs_dir());
     return -1;
 }
 

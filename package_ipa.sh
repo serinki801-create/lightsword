@@ -5,9 +5,9 @@
 set -euo pipefail
 export THEOS="${THEOS:-$HOME/theos}"
 export PATH="$THEOS/toolchain/linux/iphone/bin:$THEOS/bin:$HOME/ios-toolchain/bin:$HOME/.local/bin:$PATH"
-APP_NAME="natsuk1"
+APP_NAME="srk801"
 PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUT="$PROJ/Packages"
+OUT="$PROJ/packages"
 mkdir -p "$OUT"
 cd "$PROJ"
 # IOS_DEPLOY_TARGET (напр. arm64-apple-ios13.0 или 13.0) приходит из Tier-B

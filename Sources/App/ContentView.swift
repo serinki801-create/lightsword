@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import WebKit
 
 struct ContentView: View {
     @EnvironmentObject var state: AppState
@@ -27,45 +28,32 @@ struct ContentView: View {
                     }
                     .disabled(state.running)
 
-                    Button {
-                        state.aioB12()
-                    } label: {
-                                Label("AIO UAF B1/B2 (10x)", systemImage: "arrow.clockwise")
-                    }
-                    .disabled(state.running)
 
-                    Button {
-                        state.t0eSpike()
-                    } label: {
-                                Label("T0e Spike (SEP/DTrace)", systemImage: "antenna.radiowaves.left.and.right")
-                    }
-                    .disabled(state.running)
 
-                    Button {
-                        state.t2FrameProbe()
-                    } label: {
-                                Label("T2 Frame Probe (50x)", systemImage: "arrow.triangle.2.circlepath")
-                    }
-                    .disabled(state.running)
 
-                    Button {
-                        state.t2Dummynet()
-                    } label: {
-                                Label("T2 Dummynet Probe", systemImage: "network")
-                    }
-                    .disabled(state.running)
 
-                    Button {
-                        state.guardTest()
-                    } label: {
-                                Label("Guard Test", systemImage: "cross.circle")
-                    }
-                    .disabled(state.running)
+                    /* Grouped: the Section's ViewBuilder was already at its
+                       buildBlock arity limit (10 children) — the 11th plain
+                       button trips "extra argument in call". Two views in a
+                       Group count as one child. */
+                    Group {
+                        Button {
+                            show_webkit = true
+                        } label: {
+                                    Label("WebKit Stage", systemImage: "globe")
+                        }
 
-                    Button {
-                        show_webkit = true
-                    } label: {
-                                Label("WebKit Stage", systemImage: "globe")
+                        Button {
+                            state.iogpuOob()
+                        } label: {
+                                    Label("IOGPU OOB (24257)", systemImage: "exclamationmark.triangle")
+                        }
+
+                        Button {
+                            state.iogpuProbe2()
+                        } label: {
+                                    Label("IOGPU Probe2", systemImage: "radar")
+                        }
                     }
                     .sheet(isPresented: $show_webkit) {
                         NavigationStack {
@@ -74,24 +62,12 @@ struct ContentView: View {
                         }
                     }
 
-                    Button {
-                        state.resetProbes()
-                    } label: {
-                                Label("Reset Probe State", systemImage: "arrow.counterclockwise.circle")
-                    }
-                    .disabled(state.running)
 
-                    Button {
-                        state.pacSelfTest()
-                    } label: {
-                                Label("PAC Oracle A2", systemImage: "shield.fill")
-                    }
-                    .disabled(state.running)
                 } header: {
                     Label(state.t("Actions", "Действия"), systemImage: "play.circle")
                 } footer: {
-                    Text(state.t("**Run Exploit** executes the full chain. **Slide Only** runs KASLR bypass in isolation.",
-                                 "**Запустить эксплойт** выполняет всю цепочку. **Только слайд** запускает только обход KASLR."))
+                    Text(state.t("**WebKit Stage** — W-T3 native pivot chain. **Slide Only** — KASLR detection.",
+                                 "**WebKit Stage** — цепочка W-T3 native pivot. **Только слайд** — определение KASLR."))
                 }
 
                 Section {
@@ -154,7 +130,7 @@ struct ContentView: View {
                 }
             }
             .listStyle(.insetGrouped)
-            .navigationTitle("natsuk1")
+            .navigationTitle("srk801")
             .navigationBarTitleDisplayMode(.large)
             .tint(.blue)
             .toolbar {

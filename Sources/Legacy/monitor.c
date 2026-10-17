@@ -182,9 +182,9 @@ void nk_monitor_run(void) {
 
     const char *dir = mon_outdir();
     char json_path[600], snap_path[600], latest_path[600];
-    snprintf(json_path,   sizeof(json_path),   "%s/natsuk1_monitor_%lld.json", dir, now);
-    snprintf(snap_path,   sizeof(snap_path),   "%s/natsuk1_surface_%lld.txt",  dir, now);
-    snprintf(latest_path, sizeof(latest_path), "%s/natsuk1_surface_latest.txt", dir);
+    snprintf(json_path,   sizeof(json_path),   "%s/srk801_monitor_%lld.json", dir, now);
+    snprintf(snap_path,   sizeof(snap_path),   "%s/srk801_surface_%lld.txt",  dir, now);
+    snprintf(latest_path, sizeof(latest_path), "%s/srk801_surface_latest.txt", dir);
 
     FILE *jf = fopen(json_path, "w");
     FILE *sf = fopen(snap_path, "w");

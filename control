@@ -1,9 +1,9 @@
-Package: com.dj.natsuk1
-Name: natsuk1
+Package: com.dj.srk801
+Name: srk801
 Depends: mobilesubstrate (>= 0.9.5000)
 Version: 1.0-1
 Architecture: iphoneos-arm64
-Description: natsuk1 jailbreak framework
+Description: srk801 jailbreak framework
 Maintainer: dj
 Author: dj
 Section: System

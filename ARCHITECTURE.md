@@ -1,2 +1,2 @@
-# natsuk1 — iOS 26.2 data-only jailbreak chain (LiveContainer guest, arm64e)
+# srk801 — iOS 26.2 data-only jailbreak chain (LiveContainer guest, arm64e)
 Repo map: `Sources/App` SwiftUI UI · `Sources/Core` home/trace/state machine/exploit core · `Sources/Diag` crash guard + probe runner · `Sources/Probes` device probes · `Sources/Kernel` offsets + slide parser + mechanism doc · `Sources/Legacy` unretired but unlisted hunt/fuzz C · `Tools/` host analysis · `Docs/` proofs + maps · `Artifacts/` device dumps (generated) · `Packages/` ipas (generated) · `Dead/` retired files.

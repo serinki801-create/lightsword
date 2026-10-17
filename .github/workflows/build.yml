@@ -34,7 +34,7 @@ jobs:
             -sdk "$SDK" \
             -O \
             -parse-as-library \
-            -module-name natsuk1 \
+            -module-name srk801 \
             -import-objc-header Bridging-Header.h \
             -Xcc -ISources/Core -Xcc -ISources/Diag -Xcc -ISources/Probes -Xcc -ISources/Kernel -Xcc -ISources/Legacy \
             $(find Sources/App -name '*.swift') build/*.o \
@@ -43,22 +43,22 @@ jobs:
             -framework SwiftUI \
             -framework IOKit \
             -framework CoreFoundation \
-            -o build/natsuk1
+            -o build/srk801
 
       - name: Package ipa
         run: |
           set -e
-          rm -rf Payload natsuk1.ipa
-          mkdir -p Payload/natsuk1.app
-          cp build/natsuk1 Payload/natsuk1.app/natsuk1
-          chmod +x Payload/natsuk1.app/natsuk1
-          cp Info.plist Payload/natsuk1.app/Info.plist
-          printf 'APPL????' > Payload/natsuk1.app/PkgInfo
-          zip -qr natsuk1.ipa Payload
+          rm -rf Payload srk801.ipa
+          mkdir -p Payload/srk801.app
+          cp build/srk801 Payload/srk801.app/srk801
+          chmod +x Payload/srk801.app/srk801
+          cp Info.plist Payload/srk801.app/Info.plist
+          printf 'APPL????' > Payload/srk801.app/PkgInfo
+          zip -qr srk801.ipa Payload
           echo "=== IPA STRUCTURE ==="
-          unzip -l natsuk1.ipa
+          unzip -l srk801.ipa
 
       - uses: actions/upload-artifact@v4
         with:
-          name: natsuk1-ipa
-          path: natsuk1.ipa
+          name: srk801-ipa
+          path: srk801.ipa
