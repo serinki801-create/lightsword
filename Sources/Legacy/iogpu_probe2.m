@@ -6,8 +6,9 @@
        cmp w2,#13 selector gates over 24-byte-strided method rows.
    Device plan (watchdog-safe, per iogpu_oob.m note):
      - IOGPU service only, types 1..33, per-conn ZERO sweep sel 0..127;
-     - type-1 conn additionally: STRC 116B (sel 0..127), SCAL 1-scalar x 0..15
-       (sel 0..63), SCST scalar 0..15 + 116B struct (sel 24..59).
+     - type-1 conn additionally: STRC 116B (sel 0..127), SCAL scalar 0..64
+       (full sel 0..127 — covers row-walker w1 gate 0..55 via sel41/sel48),
+       SCST scalar 0..15 + 116B struct (sel 24..59).
      - yields every ~256 calls so LiveContainer's watchdog stays quiet.
    A hit prints one log line: kind / type / sel / scal / kr / out0 / out1. */
 #import <IOKit/IOKitLib.h>
@@ -68,9 +69,13 @@ static void probe_io(io_connect_t conn, const char *name, uint32_t t) {
         }
     }
 
-    /* SCAL — single scalar 0..15 across sel 0..63 (row-walker w1 gate is <=55) */
-    for (sel = 0; sel < 64; sel++) {
-        for (uint64_t s = 0; s < 16; s++) {
+    /* SCAL — scalarInput[0] = row-walker sub-index w1 (gate cmp w1,#55).
+       sel41 (0x9f54f8c) / sel48 (0x9f55864) are the openable type-1 rows
+       feeding the walker: ldr w1,[x2,#32][0] — first scalar arg. w1 0..64
+       covers the whole hidden 24-byte-strided row table incl. the row that
+       reaches o2_s21 (0x9f56830) -> bl 0x9f60a84 newResourceGroup. */
+    for (sel = 0; sel < 128; sel++) {
+        for (uint64_t s = 0; s < 65; s++) {
             on = 8; memset(out, 0, sizeof(out)); sc[0] = s; sc[1] = 0;
             kr = IOConnectCallMethod(conn, sel, sc, 1, NULL, 0, out, &on, NULL, NULL);
             yield_now();
