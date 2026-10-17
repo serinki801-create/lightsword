@@ -42,15 +42,16 @@ their 23C55 field verification status:
 
 | CVE / bug | Family | Status on 26.2 (23C55) |
 |---|---|---|
-| **CVE-2025-24257** — IOGPU `IOGPUGroupMemory::init` bitmap underflow (`(capacity>>6)-1` unchecked) | IOGPUFamily OOB | kernel bug present; **not reachable** from a sandboxed app (`IOServiceOpen` type gate) — currently probing with `iogpu_probe2.m` |
+| **CVE-2025-24257** — IOGPU `IOGPUGroupMemory::init` bitmap underflow (`(capacity>>6)-1` unchecked) | IOGPUFamily OOB | **ALIVE — primary route.** Kernel bug present at 23C55 and reachable on device. Zero-arg gate (`sel 11`) is dead; the structured path (`InStruct` ≥88, handlers `0x9f5415c`/`0x9f541ec` → `newResourceGroup`) and the scalar row-dispatch path (`cmp w1,#55` walker @`0x9f56cc8`, rows via `sel41`/`sel48`) survive — sweep continues with `iogpu_probe2.m` |
 | **CVE-2026-64788** — `create_resource_iosurface` invalid-release UAF | IOGPUFamily UAF | PoC integrated and swept — **not vulnerable** at 23C55 (dims validator precedes resource insertion); vulnerable shape lives in 26.6 / 23G71 |
 | **CVE-2026-43743** — IOGPUFamily race | IOGPUFamily | earlier build only; **closed** as a vector here (no sandbox entry point) |
 | **WebKit DFG type confusion** (MapIterationEntryKey-shaped node, per public writeups) | JavaScriptCore / WebKit | renderer start-chain — **works on device**: 9+ verified W-T0 runs, AAR/AAW echo confirmed (W-T2) |
-| **B12** — `aio_workq_entry` × `kevent64` blind `TAILQ_REMOVE` UAF | xnu bsd/kern | write **frame** proven statically + on-device panic trace; value-control currently blocked by iOS 26 zone sharing (21 types share `kalloc.type.192`) — kept as a research frame |
+| **B12** — `aio_workq_entry` × `kevent64` blind `TAILQ_REMOVE` UAF | xnu bsd/kern | **DEAD.** Write frame proven statically + on-device panic trace (69EDA62B), but value control is impossible: iOS 26 shares the aio zone across 21 types — route retired, kept only as an expedition log |
 
-_No zero-days are included or uncovered here — every named CVE above is already
-patched in current iOS builds and was verified against this specific binary set
-only for historical/mapping purposes._
+_The named CVEs above are already patched in current iOS builds and were checked
+against this binary set for mapping purposes. One additional source-level find:
+a `vm_fault_copy` (re)type race — present in xnu-61.12 source, closed upstream in
+xnu-12377.81.4; on-device verification pending._
 
 ## Further fate
 
