@@ -42,7 +42,7 @@ static void *race_open_cycle(void *arg) {
     int opened = 0;
     for (int i = 0; i < 2000 && !_stop; i++) {
         io_connect_t c = rk_open("AppleKeyStore", ty & 15);
-        if (c) { opened++; IOServiceClose(c); closed++; }
+        if (c) { opened++; IOServiceClose(c); }
         ty++;
         if ((i & 63) == 63) usleep(2000);
     }
