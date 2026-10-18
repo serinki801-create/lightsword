@@ -84,6 +84,12 @@ struct ContentView: View {
                         } label: {
                                     Label(state.t("MFB v2 shapes", "MFB v2 формы"), systemImage: "square.grid.3x3")
                         }
+
+                        Button {
+                            state.iomfbV3()
+                        } label: {
+                                    Label(state.t("MFB v3 gate", "MFB v3 замок"), systemImage: "key.horizontal")
+                        }
                     }
                     .sheet(isPresented: $show_webkit) {
                         NavigationStack {

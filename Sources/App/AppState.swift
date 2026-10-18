@@ -136,6 +136,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* IOMFB v3 gate hunter: sels 0..92 fingerprint with sentinel flip detection. */
+    func iomfbV3() {
+        start {
+            nk_iomfb_v3_run()
+            return true
+        }
+    }
+
     func respring() {
         append("[respring] uid=\(geteuid())")
         append("[respring] needs root + frontboard entitlements, skipped on stock iOS")
