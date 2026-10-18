@@ -27,51 +27,41 @@ struct ContentView: View {
                     }
                     .disabled(state.running)
 
-
-
-
-
                     Button {
                         state.chain()
                     } label: {
-                                Label(state.t("Chain", "Цепочка"), systemImage: "link")
+                        Label(state.t("Chain", "Цепочка"), systemImage: "link")
                     }
                     .disabled(state.running)
 
                     Button {
                         state.fuzzBatch()
                     } label: {
-                                Label(state.t("Fuzz batch", "Фазз-прогон"), systemImage: "flame")
+                        Label(state.t("Fuzz batch", "Фазз-прогон"), systemImage: "flame")
                     }
                     .disabled(state.running)
 
                     Button {
                         state.fuzz2()
                     } label: {
-                                Label(state.t("Fuzz v2 map", "Фазз v2 карта"), systemImage: "square.grid.2x2")
+                        Label(state.t("Fuzz v2 map", "Фазз v2 карта"), systemImage: "square.grid.2x2")
                     }
                     .disabled(state.running)
 
                     Button {
                         state.racer()
-
-                    Button {
-                        state.iogpuProbe2()
                     } label: {
-                                Label(state.t("IOGPU SCAL", "IOGPU SCAL"), systemImage: "cpu")
+                        Label(state.t("Race harness", "Гонки"), systemImage: "lifepreserver")
                     }
                     .disabled(state.running)
 
                     Button {
                         state.iogpuScal()
                     } label: {
-                                Label(state.t("SCAL grid", "SCAL сетка"), systemImage: "tablecells")
+                        Label(state.t("SCAL grid", "SCAL сетка"), systemImage: "tablecells")
                     }
                     .disabled(state.running)
-                    } label: {
-                                Label(state.t("Race harness", "Гонки"), systemImage: "lifepreserver")
-                    }
-                    .disabled(state.running)
+
 
                 } header: {
                     Label(state.t("Actions", "Действия"), systemImage: "play.circle")
