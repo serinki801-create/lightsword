@@ -6,7 +6,7 @@
        cmp w2,#13 selector gates over 24-byte-strided method rows.
    Device plan (watchdog-safe):
      - families: IOGPU + AGXAccelerator/IOAccelerator/IOGraphicsControl/
-       IOGPUDevice; every OPENED conn gets ZERO sweep, type-1 conns of
+       IOGPUDevice; every OPENED conn gets ZERO sweep, type-1/33 conns of
        any family get the full deep pass (STRC/SCAL/W12/SW2/SCST);
      - known_fail masks wire codes 0xe00002c2/0xe00002c7/0xe00002be,
        so ONLY true anomalies print;
@@ -27,10 +27,12 @@ static int known_fail(kern_return_t kr) {
         || kr == (kern_return_t)0x10000003  /* MACH_SEND_INVALID_DEST */
         || kr == (kern_return_t)0xe00002c7  /* kIOReturnUnsupported (wire) */
         || kr == (kern_return_t)0xe00002c2  /* walker/misser 706 (wire) */
+        || kr == (kern_return_t)0xe00002e2  /* table-2 stub rows 18/19 (wire) */
         || kr == (kern_return_t)0xe00002be
         || kr == (kern_return_t)0x2c2       /* legacy low forms */
         || kr == (kern_return_t)0x2be
-        || kr == (kern_return_t)0x2c7;
+        || kr == (kern_return_t)0x2c7
+        || kr == (kern_return_t)0x2e2;
 }
 
 static uint32_t s_ops = 0;
@@ -59,7 +61,7 @@ static void probe_io(io_connect_t conn, const char *name, uint32_t t, int deep) 
         }
     }
 
-    if (!deep) return;   /* deep passes on the type-1 client of any family */
+    if (!deep) return;   /* deep passes on the type-1/33 client of any family */
 
     /* STRC — structured 116 B zero payload, covers the >=88 family */
     for (sel = 0; sel < 128; sel++) {
@@ -201,7 +203,7 @@ void nk_iogpu_probe2_run(void) {
                 }
                 ol("[probe2] %s type=%u OPENED conn=0x%x", s_families[fam], t, conn);
                 opened++;
-                probe_io(conn, name, t, t == 1);
+                probe_io(conn, name, t, t == 1 || t == 33);
                 IOServiceClose(conn);
             }
             IOObjectRelease(svc);
