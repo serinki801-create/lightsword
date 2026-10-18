@@ -136,6 +136,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* KeyStore UC s17/s35 content-gate magic probe. */
+    func ksmagic() {
+        start {
+            nk_ksmagic_run()
+            return true
+        }
+    }
+
     /* No-WebKit kernel-surface scan: IOSurface matrix + HID/FB/accessory family opens. */
     func surfaceScan() {
         start {

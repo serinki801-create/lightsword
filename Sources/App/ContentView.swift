@@ -54,6 +54,7 @@ struct ContentView: View {
 
                     Button {
                         state.racer()
+                            Button { state.ksmagic() } label: { Text(state.t("KS magic", "KS магия")) }
                     } label: {
                                 Label(state.t("Race harness", "Гонки"), systemImage: "lifepreserver")
                     }
