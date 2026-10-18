@@ -1,3 +1,4 @@
+import Foundation
 // language: Swift, file: UIBridge.swift, target: iOS 26.2 / 23C55 / arm64e
 // JS -> native message plumbing for the WebKit stage.
 //   - RUNBEGIN / SELFTESTCLAIM / STATUS are control tags answered from C
@@ -126,6 +127,15 @@ final class NKScriptMessageHandler: NSObject, WKScriptMessageHandler {
             nk_jsbridge_log(payload.tag, payload.msg)
             if payload.tag == "RESULT" || payload.tag == "WARN" || payload.tag == "PHASE" {
                 NKBridgeSink.shared.post("[\(payload.tag)] \(payload.msg)")
+            }
+            /* AUTO-PIVOT: the moment the page reports the W-T2 echo verdict
+               (AAR/AAW proven in the renderer) fire W-T3 natively — no button,
+               dj asked for the automatic chain. One-shot per session; the
+               reload resets nothing (W-T2 re-proves itself each run anyway). */
+            if payload.tag == "RESULT", payload.msg.contains("ECHO OK") {
+                Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { _ in
+                    WebKitHolder.shared.firePivot()
+                }
             }
         }
     }
