@@ -4,11 +4,13 @@
        bl 0xfffffff009f56df4 (IOGPUResource::newResourceGroup) at 0xfffffff009f542f0.
      - row-walker engine fn 0xfffffff009f56cc8 — cmp w1,#55 /
        cmp w2,#13 selector gates over 24-byte-strided method rows.
-   Device plan (watchdog-safe, per iogpu_oob.m note):
+   Device plan (watchdog-safe):
      - IOGPU service only, types 1..33, per-conn ZERO sweep sel 0..127;
      - type-1 conn additionally: STRC 116B (sel 0..127), SCAL scalar 0..64
-       (full sel 0..127 — covers row-walker w1 gate 0..55 via sel41/sel48),
+       (full sel 0..127), W12 two-scalar (w1 0..55 x w2 0..13) on sel41/48,
        SCST scalar 0..15 + 116B struct (sel 24..59).
+     - known_fail now masks the real wire codes 0xe00002c2/0xe00002c7/0xe00002be,
+       so ONLY true anomalies print.
      - yields every ~256 calls so LiveContainer's watchdog stays quiet.
    A hit prints one log line: kind / type / sel / scal / kr / out0 / out1. */
 #import <IOKit/IOKitLib.h>
@@ -24,8 +26,12 @@ static int known_fail(kern_return_t kr) {
     return kr == KERN_SUCCESS
         || kr == (kern_return_t)KERN_FAILURE
         || kr == (kern_return_t)0x10000003  /* MACH_SEND_INVALID_DEST */
-        || kr == (kern_return_t)0x2c2       /* resource miss */
-        || kr == (kern_return_t)0x2be;
+        || kr == (kern_return_t)0xe00002c7  /* kIOReturnUnsupported (wire) */
+        || kr == (kern_return_t)0xe00002c2  /* walker/misser 706 (wire) */
+        || kr == (kern_return_t)0xe00002be
+        || kr == (kern_return_t)0x2c2       /* legacy low forms */
+        || kr == (kern_return_t)0x2be
+        || kr == (kern_return_t)0x2c7;
 }
 
 static uint32_t s_ops = 0;
@@ -83,6 +89,30 @@ static void probe_io(io_connect_t conn, const char *name, uint32_t t) {
                 ol("[probe2] SCAL HIT type=%2u sel=%3u scal=%llu kr=0x%x out_n=%u out0=%llx out1=%llx",
                    t, sel, (unsigned long long)s, kr, on,
                    (unsigned long long)out[0], on > 1 ? (unsigned long long)out[1] : 0ULL);
+            }
+        }
+    }
+
+    /* W12 — two-scalar (w1,w2) combo across the row-walker callers.
+       Gates statically: cmp w1,#55 / cmp w2,#13 (fn 0x9f56cc8).
+       Covers the full hidden row space 56x14 that the single-scalar
+       passes kept pinned at w2=0. sel41 / sel48 reach the engine from
+       the openable type-1 table. */
+    {
+        const uint32_t wsel[2] = { 41, 48 };
+        for (unsigned k = 0; k < 2; k++) {
+            for (uint64_t w1 = 0; w1 < 56; w1++) {
+                for (uint64_t w2 = 0; w2 < 14; w2++) {
+                    on = 8; memset(out, 0, sizeof(out));
+                    sc[0] = w1; sc[1] = w2;
+                    kr = IOConnectCallMethod(conn, wsel[k], sc, 2, NULL, 0, out, &on, NULL, NULL);
+                    yield_now();
+                    if (!known_fail(kr)) {
+                        ol("[probe2] W12 HIT type=%2u sel=%3u w1=%llu w2=%llu kr=0x%x out_n=%u out0=%llx out1=%llx",
+                           t, wsel[k], (unsigned long long)w1, (unsigned long long)w2, kr, on,
+                           (unsigned long long)out[0], on > 1 ? (unsigned long long)out[1] : 0ULL);
+                    }
+                }
             }
         }
     }
