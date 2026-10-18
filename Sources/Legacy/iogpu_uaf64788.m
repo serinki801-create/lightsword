@@ -438,21 +438,13 @@ static void stage_identity_probe(id<MTLDevice> dev, io_connect_t conn) {
     printf("\n=== STAGE P - valid-resource identity probe ===\n");
     if (!g_trap2) return;
 
-    int wl = 1, hl = 1; uint32_t bpl = 4; uint64_t bs = 4;
-    CFMutableDictionaryRef d =
-        CFDictionaryCreateMutable(NULL, 0,
-                                  &kCFTypeDictionaryKeyCallBacks,
-                                  &kCFTypeDictionaryValueCallBacks);
-    CFNumberRef wN  = CFNumberCreate(NULL, kCFNumberIntType, &wl);
-    CFNumberRef hN  = CFNumberCreate(NULL, kCFNumberIntType, &hl);
-    CFNumberRef bpN = CFNumberCreate(NULL, kCFNumberIntType, &bpl);
-    CFNumberRef bsN = CFNumberCreate(NULL, kCFNumberLongLongType, &bs);
-    CFDictionarySetValue(d, IOSurfacePropertyKey("IOSurfaceWidth"), wN);
-    CFDictionarySetValue(d, IOSurfacePropertyKey("IOSurfaceHeight"), hN);
-    CFDictionarySetValue(d, IOSurfacePropertyKey("IOSurfaceBytesPerRow"), bpN);
-    CFDictionarySetValue(d, IOSurfacePropertyKey("IOSurfaceAllocSize"), bsN);
-    IOSurfaceRef surf = IOSurfaceCreate(d);
-    CFRelease(wN); CFRelease(hN); CFRelease(bpN); CFRelease(bsN); CFRelease(d);
+    NSDictionary *props = @{
+        (id)kIOSurfaceWidth:            @(1),
+        (id)kIOSurfaceHeight:           @(1),
+        (id)kIOSurfaceBytesPerElement:  @(4),
+        (id)kIOSurfacePixelFormat:      @(0x42475241), /* kCVPixelFormatType_32BGRA */
+    };
+    IOSurfaceRef surf = IOSurfaceCreate((__bridge CFDictionaryRef)props);
     if (!surf) { printf("[probe-id] IOSurfaceCreate(1x1) failed\n"); return; }
 
     MTLTextureDescriptor *desc = [MTLTextureDescriptor new];
