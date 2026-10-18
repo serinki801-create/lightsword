@@ -112,6 +112,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* Fuzz v2: kernel-VA forensics + 18-family open/sweep map. */
+    func fuzz2() {
+        start {
+            nk_fuzz2_run()
+            return true
+        }
+    }
+
     /* No-WebKit kernel-surface scan: IOSurface matrix + HID/FB/accessory family opens. */
     func surfaceScan() {
         start {

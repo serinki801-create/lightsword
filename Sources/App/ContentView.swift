@@ -37,6 +37,13 @@ struct ContentView: View {
                                 Label(state.t("Fuzz batch", "Фазз-прогон"), systemImage: "flame")
                     }
                     .disabled(state.running)
+
+                    Button {
+                        state.fuzz2()
+                    } label: {
+                                Label(state.t("Fuzz v2 map", "Фазз v2 карта"), systemImage: "square.grid.2x2")
+                    }
+                    .disabled(state.running)
                 } header: {
                     Label(state.t("Actions", "Действия"), systemImage: "play.circle")
                 } footer: {
