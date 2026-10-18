@@ -8,7 +8,6 @@ struct ContentView: View {
     @AppStorage("auto_run") private var auto_run: Bool = false
 
     @State private var show_settings: Bool = false
-    @State private var show_webkit: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -32,78 +31,17 @@ struct ContentView: View {
 
 
 
-                    /* Grouped: the Section's ViewBuilder was already at its
-                       buildBlock arity limit (10 children) — the 11th plain
-                       button trips "extra argument in call". Two views in a
-                       Group count as one child. */
-                    Group {
-                        Button {
-                            show_webkit = true
-                        } label: {
-                                    Label("WebKit Stage", systemImage: "globe")
-                        }
-
-                        Button {
-                            state.iogpuOob()
-                        } label: {
-                                    Label("IOGPU OOB (24257)", systemImage: "exclamationmark.triangle")
-                        }
-
-                        Button {
-                            state.iogpuProbe2()
-                        } label: {
-                                    Label("IOGPU Probe2", systemImage: "radar")
-                        }
-
-                        Button {
-                            state.iogpuUaf()
-                        } label: {
-                                    Label("IOGPU UAF 64788", systemImage: "bolt.horizontal")
-                        }
-
-                        Button {
-                            state.fuzzBatch()
-                        } label: {
-                                    Label(state.t("Fuzz batch", "Фазз-прогон"), systemImage: "flame")
-                        }
-
-                        Button {
-                            state.surfaceScan()
-                        } label: {
-                                    Label(state.t("Surface scan", "Сурфейс-скан"), systemImage: "target")
-                        }
-
-                        Button {
-                            state.iomfbDeep()
-                        } label: {
-                                    Label(state.t("MFB deep", "MFB глубоко"), systemImage: "display")
-                        }
-
-                        Button {
-                            state.iomfbV2()
-                        } label: {
-                                    Label(state.t("MFB v2 shapes", "MFB v2 формы"), systemImage: "square.grid.3x3")
-                        }
-
-                        Button {
-                            state.iomfbV3()
-                        } label: {
-                                    Label(state.t("MFB v3 gate", "MFB v3 замок"), systemImage: "key.horizontal")
-                        }
+                    Button {
+                        state.fuzzBatch()
+                    } label: {
+                                Label(state.t("Fuzz batch", "Фазз-прогон"), systemImage: "flame")
                     }
-                    .sheet(isPresented: $show_webkit) {
-                        NavigationStack {
-                            WebKitStageView()
-                                .environmentObject(AppState.shared)
-                        }
-                    }
-
-
+                    .disabled(state.running)
                 } header: {
                     Label(state.t("Actions", "Действия"), systemImage: "play.circle")
                 } footer: {
-                    Text(state.t("**WebKit Stage** — W-T3 native pivot chain. **Slide Only** — KASLR detection. **Fuzz batch** — registry/proc_info/IPC/mach-leak surface hunts.",
-                                 "**WebKit Stage** — цепочка W-T3 native pivot. **Только слайд** — определение KASLR. **Фазз-прогон** — поверхности: registry / proc_info / IPC / mach-leak."))
+                    Text(state.t("**Slide Only** — KASLR detection. **Fuzz batch** — registry/proc_info/IPC/mach-leak surface hunts.",
+                                 "**Только слайд** — определение KASLR. **Фазз-прогон** — поверхности: registry / proc_info / IPC / mach-leak."))
                 }
 
                 Section {
