@@ -112,17 +112,44 @@ static void part_a(void) {
 
 /* ---- PART B: 18-family deep open + sweep ---- */
 static int f2_noise(kern_return_t kr) {
-    return kr == KERN_SUCCESS
-        || kr == (kern_return_t)0xe00002c2
+    return kr == (kern_return_t)0xe00002c2
         || kr == (kern_return_t)0xe00002c7
         || kr == (kern_return_t)0xe00002e2
-        || kr == (kern_return_t)0xe00002be
-        || kr == (kern_return_t)0x2c2
-        || kr == (kern_return_t)0x2be;
+        || kr == (kern_return_t)0xe00002be;
 }
 
+/* big five: full logging incl. KERN_SUCCESS + out quad */
+static int f2_big(const char *n) {
+    return !strcmp(n, "AppleJPEGDriver") || !strcmp(n, "AppleM2ScalerCSCDriver")
+        || !strcmp(n, "AppleCLCD2") || !strcmp(n, "AppleKeyStore")
+        || !strcmp(n, "AGXAcceleratorG14P");
+}
+
+static int f2_log_scal(const char *n, uint32_t ty, uint32_t sel, kern_return_t kr, const uint64_t *out) {
+    if (f2_big(n))
+        fl2("[f2] %s t%u SCAL s%u kr=0x%x out=%llx,%llx,%llx,%llx",
+            n, ty, sel, kr, (unsigned long long)out[0],
+            (unsigned long long)out[1], (unsigned long long)out[2],
+            (unsigned long long)out[3]);
+    else if (!f2_noise(kr) && kr != KERN_SUCCESS)
+        fl2("[f2] %s t%u SCAL s%u kr=0x%x", n, ty, sel, kr);
+    return 0;
+}
+
+static int f2_log_strc(const char *n, uint32_t ty, uint32_t sel, size_t sz, kern_return_t kr) {
+    if (f2_big(n))
+        fl2("[f2] %s t%u STRC s%u sz%zu kr=0x%x", n, ty, sel, sz, kr);
+    else if (!f2_noise(kr) && kr != KERN_SUCCESS)
+        fl2("[f2] %s t%u STRC s%u sz%zu kr=0x%x", n, ty, sel, sz, kr);
+    return 0;
+}
+
+/* boundary ladder for keystore s17/s35 */
+static const size_t KS_SZ[12] = { 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256 };
+static const size_t BIG_SZ[6] = { 16, 64, 96, 192, 256, 384 };
+
 static void part_b(void) {
-    fl2("[f2] B: 18-family probe");
+    fl2("[f2] B: 18-family probe (full big-five logging)");
     for (int fi = 0; fi < 18; fi++) {
         CFMutableDictionaryRef md = IOServiceMatching(FAMS[fi]);
         if (!md) { fl2("[f2] %s no match", FAMS[fi]); continue; }
@@ -147,26 +174,61 @@ static void part_b(void) {
                 for (uint32_t sel = 0; sel < 64; sel++) {
                     uint64_t in2[2] = { sel, 0 };
                     uint64_t out[8]; uint32_t oc = 8;
+                    memset(out, 0, sizeof(out));
                     kern_return_t ks = IOConnectCallMethod(
                         c, sel, in2, 2, NULL, 0, out, &oc, NULL, NULL);
-                    if (!f2_noise(ks))
-                        fl2("[f2] %s t%u SCAL s%u kr=0x%x out=%llx",
-                            FAMS[fi], ty, sel, ks, (unsigned long long)out[0]);
+                    f2_log_scal(FAMS[fi], ty, sel, ks, out);
                     if ((sel & 0x1f) == 0x1f) yieldf();
                 }
-                static const size_t SZS[2] = { 16, 64 };
-                uint8_t stb[64], outb[256];
-                for (int z = 0; z < 2; z++) {
-                    size_t sz = SZS[z];
+                const size_t *szs = BIG_SZ;
+                size_t nsz = 6;
+                if (!strcmp(FAMS[fi], "AppleKeyStore")) {
+                    /* single-shot ladder inside sel loop below */
+                    for (uint32_t sel = 0; sel < 64; sel++) {
+                        if (sel == 17 || sel == 35) {
+                            for (int z = 0; z < 12; z++) {
+                                size_t sz = KS_SZ[z];
+                                uint8_t stb[256], outb[512];
+                                for (size_t q = 0; q < sz; q++) stb[q] = 0xAA;
+                                size_t osz = sizeof(outb);
+                                kern_return_t kt = IOConnectCallStructMethod(
+                                    c, sel, stb, sz, outb, &osz);
+                                fl2("[f2] %s t%u KSD s%u sz%zu kr=0x%x osz%zu",
+                                    FAMS[fi], ty, sel, sz, kt, osz);
+                                if ((z & 7) == 7) yieldf();
+                            }
+                            continue;
+                        }
+                        for (int z = 0; z < 6; z++) {
+                            size_t sz = BIG_SZ[z];
+                            if (sz > 256) continue;
+                            uint8_t stb[256], outb[512];
+                            memset(stb, 0, sizeof(stb));
+                            for (size_t q = 0; q < sz; q++) stb[q] = 0xAA;
+                            memset(stb, 0, sizeof(stb) - sz);
+                            size_t osz = sizeof(outb);
+                            kern_return_t kt = IOConnectCallStructMethod(
+                                c, sel, stb, sz, outb, &osz);
+                            f2_log_strc(FAMS[fi], ty, sel, sz, kt);
+                            if ((sel & 0x0f) == 0x0f) yieldf();
+                        }
+                    }
+                    IOServiceClose(c);
+                    sleep(1);
+                    continue;
+                }
+                for (int z = 0; z < (int)nsz; z++) {
+                    size_t sz = szs[z];
+                    if (sz > 256) { /* 384 needs bigger stack buffer: skip for now */ continue; }
+                    uint8_t stb[256], outb[512];
                     memset(stb, 0, sizeof(stb));
-                    memset(stb, 0xAA, sz);
+                    for (size_t q = 0; q < sz; q++) stb[q] = 0xAA;
+                    memset(stb, 0, sizeof(stb) - sz);
                     for (uint32_t sel = 0; sel < 64; sel++) {
                         size_t osz = sizeof(outb);
                         kern_return_t kt = IOConnectCallStructMethod(
                             c, sel, stb, sz, outb, &osz);
-                        if (!f2_noise(kt))
-                            fl2("[f2] %s t%u STRC s%u sz%zu kr=0x%x",
-                                FAMS[fi], ty, sel, sz, kt);
+                        f2_log_strc(FAMS[fi], ty, sel, sz, kt);
                         if ((sel & 0x0f) == 0x0f) yieldf();
                     }
                 }
@@ -181,13 +243,4 @@ static void part_b(void) {
         sleep(2);
     }
     fl2("[f2] B done");
-}
-
-void nk_fuzz2_run(void) {
-    nk_filelog_open("fuzz2");
-    nk_log("[f2] fuzz2 session start");
-    part_a();
-    part_b();
-    nk_log("[f2] fuzz2 session end");
-    nk_filelog_close();
 }
