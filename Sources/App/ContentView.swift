@@ -55,13 +55,6 @@ struct ContentView: View {
                     }
                     .disabled(state.running)
 
-                    Button {
-                        state.iogpuScal()
-                    } label: {
-                        Label(state.t("SCAL grid", "SCAL сетка"), systemImage: "tablecells")
-                    }
-                    .disabled(state.running)
-
 
                 } header: {
                     Label(state.t("Actions", "Действия"), systemImage: "play.circle")

