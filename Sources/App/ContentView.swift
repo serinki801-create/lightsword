@@ -55,6 +55,12 @@ struct ContentView: View {
                     }
                     .disabled(state.running)
 
+                    NavigationLink {
+                        WebKitStageView()
+                    } label: {
+                        Label(state.t("WebKit pivot", "WebKit пивот"), systemImage: "safari")
+                    }
+
 
                 } header: {
                     Label(state.t("Actions", "Действия"), systemImage: "play.circle")

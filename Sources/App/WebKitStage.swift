@@ -287,6 +287,12 @@ struct WebKitStageView: View {
                             .foregroundColor(aarOn ? .green : .secondary)
                     }
                     Button(state.t("Reload", "Перезагрузить")) { WebKitHolder.shared.reload() }
+                    Button {
+                        WebKitHolder.shared.firePivot()
+                    } label: {
+                        Image(systemName: "arrow.right.circle.fill")
+                            .foregroundColor(.red)
+                    }
                 }
             }
         }
