@@ -473,8 +473,6 @@ static void stage_identity_probe(id<MTLDevice> dev, io_connect_t conn) {
     }
     printf("[probe-id] done\n");
 }
-    printf("[probe-id] done\n");
-}
 
 /* ── Entry point ─────────────────────────────────────────────────────────*/
 int poc_iogpu_uaf_run(void) {
