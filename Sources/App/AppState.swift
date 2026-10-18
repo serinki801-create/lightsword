@@ -120,6 +120,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* IOMobileFramebuffer deep sweep: types 0..15 x scalar AND structured 24..127. */
+    func iomfbDeep() {
+        start {
+            nk_iomfb_deep_run()
+            return true
+        }
+    }
+
     func respring() {
         append("[respring] uid=\(geteuid())")
         append("[respring] needs root + frontboard entitlements, skipped on stock iOS")

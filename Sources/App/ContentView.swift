@@ -72,6 +72,12 @@ struct ContentView: View {
                         } label: {
                                     Label(state.t("Surface scan", "Сурфейс-скан"), systemImage: "target")
                         }
+
+                        Button {
+                            state.iomfbDeep()
+                        } label: {
+                                    Label(state.t("MFB deep", "MFB глубоко"), systemImage: "display")
+                        }
                     }
                     .sheet(isPresented: $show_webkit) {
                         NavigationStack {
