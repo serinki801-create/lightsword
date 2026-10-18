@@ -14,6 +14,7 @@ void nk_chain_run(void) {
     nk_dataonly_necp_chain();
     nk_log("[ch] stage 1 done -> stage 2: race (this line = stage1 returned)");
     nk_racer_run();
+    fflush(stdout);
     nk_log("[ch] stage 2 done -> stage 3: IOGPU OOB (this line = stage2 returned)");
     fflush(stdout);
     nk_iogpu_oob_run();
