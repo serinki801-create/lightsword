@@ -46,8 +46,8 @@ static const char *FAMS[18] = {
     "AGXAcceleratorG14P"
 };
 
-static void f2_read(mach_vm_address_t a, void *out, mach_vm_size_t n) {
-    mach_vm_size_t got = n;
+static void f2_read(mach_vm_address_t a, void *out, vm_size_t n) {
+    vm_size_t got = n;
     kern_return_t r = vm_read_overwrite(
         mach_task_self(), a, n, (vm_address_t)(uintptr_t)out, &got);
     if (r != KERN_SUCCESS) memset(out, 0, n);
