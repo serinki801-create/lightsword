@@ -24,18 +24,6 @@
 
 static void yieldf(void) { usleep(30000); }
 
-static int f2_is_kernel_va(uint64_t v) {
-    uint32_t hi = (uint32_t)(v >> 32);
-    return hi == 0xfffffff0 || hi == 0xffffffe0 ||
-           hi == 0xfffffe00 || hi == 0xffffff80;
-}
-static int f2_is_poison(uint64_t v) {
-    return v == 0x4141414141414141ULL ||
-           v == 0x0000000000000000ULL ||
-           v == 0xABABABABABABABABULL ||
-           (v & 0xFFFFFFFF) == 0xDEADBEEFULL;
-}
-
 static const char *FAMS[18] = {
     "ANEDriverRoot", "H11ANE", "AppleKeyStore", "IOCoreSurfaceRoot",
     "AppleEmbeddedNVMeTemperatureSensor", "AppleARMPMUTempSensor",
