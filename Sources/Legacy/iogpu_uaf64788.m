@@ -440,13 +440,13 @@ static void stage_identity_probe(id<MTLDevice> dev, io_connect_t conn) {
 
     int wl = 1, hl = 1; uint32_t bpl = 4; uint64_t bs = 4;
     CFMutableDictionaryRef d =
-        CFDictionaryCreateMutable(nullptr, 0,
+        CFDictionaryCreateMutable(NULL, 0,
                                   &kCFTypeDictionaryKeyCallBacks,
                                   &kCFTypeDictionaryValueCallBacks);
-    CFNumberRef wN  = CFNumberCreate(nullptr, kCFNumberIntType, &wl);
-    CFNumberRef hN  = CFNumberCreate(nullptr, kCFNumberIntType, &hl);
-    CFNumberRef bpN = CFNumberCreate(nullptr, kCFNumberIntType, &bpl);
-    CFNumberRef bsN = CFNumberCreate(nullptr, kCFNumberLongLongType, &bs);
+    CFNumberRef wN  = CFNumberCreate(NULL, kCFNumberIntType, &wl);
+    CFNumberRef hN  = CFNumberCreate(NULL, kCFNumberIntType, &hl);
+    CFNumberRef bpN = CFNumberCreate(NULL, kCFNumberIntType, &bpl);
+    CFNumberRef bsN = CFNumberCreate(NULL, kCFNumberLongLongType, &bs);
     CFDictionarySetValue(d, IOSurfacePropertyKey("IOSurfaceWidth"), wN);
     CFDictionarySetValue(d, IOSurfacePropertyKey("IOSurfaceHeight"), hN);
     CFDictionarySetValue(d, IOSurfacePropertyKey("IOSurfaceBytesPerRow"), bpN);
