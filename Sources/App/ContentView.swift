@@ -59,12 +59,6 @@ struct ContentView: View {
                     }
                     .disabled(state.running)
 
-                    Button {
-                        state.ksmagic()
-                    } label: {
-                                Label(state.t("KS magic", "KS магия"), systemImage: "key")
-                    }
-                    .disabled(state.running)
                 } header: {
                     Label(state.t("Actions", "Действия"), systemImage: "play.circle")
                 } footer: {
