@@ -14,9 +14,11 @@ void nk_chain_run(void) {
     nk_filelog_open("chain");
     nk_log("[esc] stage 1: IOGPU OOB (pivot out of sandbox)");
     nk_iogpu_oob_run();
+    nk_filelog_reopen_last();
     nk_log("[esc] stage 1 done -> stage 2: race");
     fflush(stdout);
     nk_racer_run();
+    nk_filelog_reopen_last();
     nk_log("[run] stage 2 done -> stage 3: IOGPU OOB deep");
     fflush(stdout);
     sleep(3);
