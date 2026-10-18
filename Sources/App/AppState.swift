@@ -96,6 +96,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* CVE-2026-64788 IOGPU UAF PoC — Metal/IOSurface driven, Documents-logged. */
+    func iogpuUaf() {
+        start {
+            nk_iogpu_uaf_run()
+            return true
+        }
+    }
+
     /* Fuzz batch: surface hunts only, no KASLR stage, no gated primitives. */
     func fuzzBatch() {
         start {

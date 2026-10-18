@@ -56,6 +56,12 @@ struct ContentView: View {
                         }
 
                         Button {
+                            state.iogpuUaf()
+                        } label: {
+                                    Label("IOGPU UAF 64788", systemImage: "bolt.horizontal")
+                        }
+
+                        Button {
                             state.fuzzBatch()
                         } label: {
                                     Label(state.t("Fuzz batch", "Фазз-прогон"), systemImage: "flame")

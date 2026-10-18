@@ -174,6 +174,7 @@ static const char *s_families[] = {
 #define NFAM ((int)(sizeof(s_families) / sizeof(s_families[0])))
 
 void nk_iogpu_probe2_run(void) {
+    nk_filelog_open("probe2");
     io_iterator_t it = 0;
     io_service_t svc;
     io_name_t name;
@@ -214,4 +215,5 @@ void nk_iogpu_probe2_run(void) {
         ol("[probe2] family %s found=%u", s_families[fam], found);
     }
     ol("[probe2] done opened=%u ops=%u", opened, s_ops);
+    nk_filelog_close();
 }

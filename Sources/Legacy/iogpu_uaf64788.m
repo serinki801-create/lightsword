@@ -435,6 +435,9 @@ int poc_iogpu_uaf_run(void) {
 /* Native bridge wrapper: the srk801 console capture reads the process stdout,
    so the PoC's printf output lands in the app log and trace.log alike. */
 void nk_iogpu_uaf_run(void) {
+    nk_filelog_open("uaf64788");
+    nk_log("[iogpu-uaf] session start");
     int r = poc_iogpu_uaf_run();
     nk_log("[iogpu-uaf] poc exit=%d", r);
+    nk_filelog_close();
 }
