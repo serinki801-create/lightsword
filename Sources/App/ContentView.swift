@@ -44,6 +44,13 @@ struct ContentView: View {
                                 Label(state.t("Fuzz v2 map", "Фазз v2 карта"), systemImage: "square.grid.2x2")
                     }
                     .disabled(state.running)
+
+                    Button {
+                        state.racer()
+                    } label: {
+                                Label(state.t("Race harness", "Гонки"), systemImage: "lifepreserver")
+                    }
+                    .disabled(state.running)
                 } header: {
                     Label(state.t("Actions", "Действия"), systemImage: "play.circle")
                 } footer: {

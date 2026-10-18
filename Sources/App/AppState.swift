@@ -113,6 +113,14 @@ final class AppState: ObservableObject {
     }
 
     /* Fuzz v2: kernel-VA forensics + 18-family open/sweep map. */
+    /* Race harness: same-UC concurrent dispatch on KeyStore + AGX. */
+    func racer() {
+        start {
+            nk_racer_run()
+            return true
+        }
+    }
+
     func fuzz2() {
         start {
             nk_fuzz2_run()
