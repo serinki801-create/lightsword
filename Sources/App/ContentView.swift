@@ -54,6 +54,12 @@ struct ContentView: View {
                         } label: {
                                     Label("IOGPU Probe2", systemImage: "radar")
                         }
+
+                        Button {
+                            state.fuzzBatch()
+                        } label: {
+                                    Label(state.t("Fuzz batch", "Фазз-прогон"), systemImage: "flame")
+                        }
                     }
                     .sheet(isPresented: $show_webkit) {
                         NavigationStack {
@@ -66,8 +72,8 @@ struct ContentView: View {
                 } header: {
                     Label(state.t("Actions", "Действия"), systemImage: "play.circle")
                 } footer: {
-                    Text(state.t("**WebKit Stage** — W-T3 native pivot chain. **Slide Only** — KASLR detection.",
-                                 "**WebKit Stage** — цепочка W-T3 native pivot. **Только слайд** — определение KASLR."))
+                    Text(state.t("**WebKit Stage** — W-T3 native pivot chain. **Slide Only** — KASLR detection. **Fuzz batch** — registry/proc_info/IPC/mach-leak surface hunts.",
+                                 "**WebKit Stage** — цепочка W-T3 native pivot. **Только слайд** — определение KASLR. **Фазз-прогон** — поверхности: registry / proc_info / IPC / mach-leak."))
                 }
 
                 Section {

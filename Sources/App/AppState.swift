@@ -96,6 +96,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* Fuzz batch: surface hunts only, no KASLR stage, no gated primitives. */
+    func fuzzBatch() {
+        start {
+            nk_fuzz_batch()
+            return true
+        }
+    }
+
     func respring() {
         append("[respring] uid=\(geteuid())")
         append("[respring] needs root + frontboard entitlements, skipped on stock iOS")
