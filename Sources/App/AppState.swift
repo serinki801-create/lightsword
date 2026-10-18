@@ -112,6 +112,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* No-WebKit kernel-surface scan: IOSurface matrix + HID/FB/accessory family opens. */
+    func surfaceScan() {
+        start {
+            nk_surface_scan_run()
+            return true
+        }
+    }
+
     func respring() {
         append("[respring] uid=\(geteuid())")
         append("[respring] needs root + frontboard entitlements, skipped on stock iOS")

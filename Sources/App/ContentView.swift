@@ -66,6 +66,12 @@ struct ContentView: View {
                         } label: {
                                     Label(state.t("Fuzz batch", "Фазз-прогон"), systemImage: "flame")
                         }
+
+                        Button {
+                            state.surfaceScan()
+                        } label: {
+                                    Label(state.t("Surface scan", "Сурфейс-скан"), systemImage: "target")
+                        }
                     }
                     .sheet(isPresented: $show_webkit) {
                         NavigationStack {
