@@ -66,9 +66,10 @@ void nk_ksmagic_run(void) {
             if (kr != KERN_SUCCESS || !conn) { usleep(2000); continue; }
             static const uint32_t sels[2] = {17, 35};
               for (int a = 0; a < 2; a++)
-              for (int c = 0; c < 16; c++)
-                for (int b = 0; b < 2; b++)
-                  ks_try(conn, type, sels[a], szs[b], KMAG[c]);
+              for (int c = 0; c < 16; c++) {
+                ks_try(conn, type, sels[a], 64, KMAG[c]);
+                ks_try(conn, type, sels[a], 256, KMAG[c]);
+              }
             IOServiceClose(conn);
             usleep(2000);
         }
