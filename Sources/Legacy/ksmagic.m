@@ -13,11 +13,14 @@
 
 #define ol(...) nk_log(__VA_ARGS__)
 
-static const uint8_t KS_MAGIC[32] = {
-    0x98,0x24,0x7a,0x01,0x71,0x37,0x11,0x80,
-    0x70,0x22,0x7a,0x01,0xb7,0x56,0x11,0x80,
-    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+/* Device verdicts: all-zero struct -> 0x2f0; any nonzero -> 0x2c2.
+   Verdict reads a leading word. Shotgun 16 u32 candidates at offset 0. */
+static const uint32_t KMAG[16] = {
+    0x00000001u, 0x00000116u, 0x31474142u /* BAG1 */,
+    0x47414249u /* IBAG */, 0x42534b41u /* AKSB */,
+    0x54534b41u /* AKST */, 0x0e000001u, 0x0e000002u,
+    0x00000003u, 0x00000008u, 0x00000016u, 0x504b5341u /* ASKP */,
+    0x534d4548u, 0x00000a2fu, 0xfffffffu, 0xfeabf00du
 };
 
 static int ks_noise(uint32_t kr) {
@@ -31,21 +34,21 @@ static int ks_noise(uint32_t kr) {
 }
 
 static void ks_try(io_connect_t conn, uint32_t type, uint32_t sel,
-                   size_t inSz, size_t at) {
+                   size_t inSz, uint32_t mag) {
     static uint8_t sbuf[256];
     memset(sbuf, 0, sizeof(sbuf));
-    memcpy(sbuf + at, KS_MAGIC, 16);
+    memcpy(sbuf, &mag, 4);
     uint64_t so[4] = {0};
     uint32_t oN = 4;
     kern_return_t kr = IOConnectCallMethod(conn, sel, NULL, 0, sbuf, inSz,
                                            so, &oN, NULL, NULL);
     if (!ks_noise(kr))
-        ol("[ksm] HIT type=%u sel=%u sz=%zu off=0x%zx kr=0x%x out=%llx %llx %llx %llx",
-           type, sel, inSz, at, kr,
+        ol("[ksm] HIT type=%u sel=%u sz=%zu mag=0x%08x kr=0x%x out=%llx %llx %llx %llx",
+           type, sel, inSz, mag, kr,
            (unsigned long long)so[0], (unsigned long long)so[1],
            (unsigned long long)so[2], (unsigned long long)so[3]);
     else if (kr != 0xe00002f0 && kr != 0x0)
-        ol("[ksm] type=%u sel=%u sz=%zu off=0x%zx kr=0x%x", type, sel, inSz, at, kr);
+        ol("[ksm] type=%u sel=%u sz=%zu mag=0x%08x kr=0x%x", type, sel, inSz, mag, kr);
 }
 
 void nk_ksmagic_run(void) {
@@ -62,12 +65,10 @@ void nk_ksmagic_run(void) {
             kr = IOServiceOpen(svc, mach_task_self(), type, &conn);
             if (kr != KERN_SUCCESS || !conn) { usleep(2000); continue; }
             static const uint32_t sels[2] = {17, 35};
-            static const size_t szs[3] = {64, 96, 256};
-            static const size_t offs[3] = {0, 0x18, 0x19};
-            for (int a = 0; a < 2; a++)
-              for (int b = 0; b < 3; b++)
-                for (int c = 0; c < 3; c++)
-                  ks_try(conn, type, sels[a], szs[b], offs[c]);
+              for (int a = 0; a < 2; a++)
+              for (int c = 0; c < 16; c++)
+                for (int b = 0; b < 2; b++)
+                  ks_try(conn, type, sels[a], szs[b], KMAG[c]);
             IOServiceClose(conn);
             usleep(2000);
         }
