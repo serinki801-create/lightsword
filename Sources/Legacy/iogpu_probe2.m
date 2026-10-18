@@ -9,8 +9,9 @@
        AGXAccelerator/IOAccelerator/IOGraphicsControl/IOGPUDevice
        (types 0..40, ZERO + W12 passes);
      - IOGPU full ZERO sel 0..127 and SINGLE-scalar SCAL 0..64 sel 0..127;
-     - W12 two-scalar (w1 0..55 x w2 0..13) on the row-walker callers
-       sel41/sel48 (and sel0 connectors on siblings);
+     - W12 two-scalar (w1 0..55 x w2 0..13) and SW2 (w2 via structureInput[0],
+       scalar = w1) on the row-walker callers sel41/sel48 (and sel0
+       connectors on siblings);
      - known_fail masks wire codes 0xe00002c2/0xe00002c7/0xe00002be,
        so ONLY true anomalies print;
      - yields every ~256 calls so LiveContainer's watchdog stays quiet.
@@ -113,6 +114,32 @@ static void probe_io(io_connect_t conn, const char *name, uint32_t t) {
                         ol("[probe2] W12 HIT type=%2u sel=%3u w1=%llu w2=%llu kr=0x%x out_n=%u out0=%llx out1=%llx",
                            t, wsel[k], (unsigned long long)w1, (unsigned long long)w2, kr, on,
                            (unsigned long long)out[0], on > 1 ? (unsigned long long)out[1] : 0ULL);
+                    }
+                }
+            }
+        }
+    }
+
+    /* SW2 — walker second index via structureInput[0].
+       Statics only pin w1 = scalarInput[0]; w2's slot is unconfirmed
+       (scalar[1] or struct head). Covers the struct-slot dimension
+       the W12 pass cannot. inp[0..3] = LE u32 w2, rest zero. */
+    {
+        const uint32_t wsel[2] = { 41, 48 };
+        for (unsigned k = 0; k < 2; k++) {
+            for (uint64_t w1 = 0; w1 < 56; w1++) {
+                for (uint64_t w2 = 0; w2 < 14; w2++) {
+                    uint32_t wv = (uint32_t)w2;
+                    size_t sz = 8;
+                    memset(inp, 0, sizeof(inp));
+                    memcpy(inp, &wv, sizeof(wv));
+                    on = 8; memset(out, 0, sizeof(out)); sc[0] = w1; sc[1] = 0;
+                    kr = IOConnectCallStructMethod(conn, wsel[k], inp, sizeof(inp), out, &sz);
+                    yield_now();
+                    if (!known_fail(kr)) {
+                        ol("[probe2] SW2 HIT type=%2u sel=%3u w1=%llu w2=%llu kr=0x%x out0=%llx",
+                           t, wsel[k], (unsigned long long)w1, (unsigned long long)w2, kr,
+                           (unsigned long long)out[0]);
                     }
                 }
             }
