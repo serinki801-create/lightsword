@@ -5,13 +5,9 @@
      - row-walker engine fn 0xfffffff009f56cc8 — cmp w1,#55 /
        cmp w2,#13 selector gates over 24-byte-strided method rows.
    Device plan (watchdog-safe):
-     - families: IOGPU (types 1..40, deep: STRC/SCAL/W12/SCST) +
-       AGXAccelerator/IOAccelerator/IOGraphicsControl/IOGPUDevice
-       (types 0..40, ZERO + W12 passes);
-     - IOGPU full ZERO sel 0..127 and SINGLE-scalar SCAL 0..64 sel 0..127;
-     - W12 two-scalar (w1 0..55 x w2 0..13) and SW2 (w2 via structureInput[0],
-       scalar = w1) on the row-walker callers sel41/sel48 (and sel0
-       connectors on siblings);
+     - families: IOGPU + AGXAccelerator/IOAccelerator/IOGraphicsControl/
+       IOGPUDevice; every OPENED conn gets ZERO sweep, type-1 conns of
+       any family get the full deep pass (STRC/SCAL/W12/SW2/SCST);
      - known_fail masks wire codes 0xe00002c2/0xe00002c7/0xe00002be,
        so ONLY true anomalies print;
      - yields every ~256 calls so LiveContainer's watchdog stays quiet.
@@ -43,7 +39,7 @@ static inline void yield_now(void) {
     if (++s_ops % 256 == 0) usleep(50);
 }
 
-static void probe_io(io_connect_t conn, const char *name, uint32_t t) {
+static void probe_io(io_connect_t conn, const char *name, uint32_t t, int deep) {
     uint32_t sel;
     uint32_t on;
     uint64_t sc[2];
@@ -63,7 +59,7 @@ static void probe_io(io_connect_t conn, const char *name, uint32_t t) {
         }
     }
 
-    if (t != 1) return;   /* deep passes only on the device-userclient type */
+    if (!deep) return;   /* deep passes on the type-1 client of any family */
 
     /* STRC — structured 116 B zero payload, covers the >=88 family */
     for (sel = 0; sel < 128; sel++) {
@@ -205,35 +201,7 @@ void nk_iogpu_probe2_run(void) {
                 }
                 ol("[probe2] %s type=%u OPENED conn=0x%x", s_families[fam], t, conn);
                 opened++;
-                if (is_iogpu) {
-                    probe_io(conn, name, t);
-                } else if (t == 0) {
-                    /* zero-arg pass only, then the W12 walker combos */
-                    for (uint32_t sel = 0; sel < 128; sel++) {
-                        uint32_t on = 8; uint64_t out[8]; kern_return_t k2;
-                        memset(out, 0, sizeof(out));
-                        k2 = IOConnectCallMethod(conn, sel, NULL, 0, NULL, 0, out, &on, NULL, NULL);
-                        yield_now();
-                        if (!known_fail(k2))
-                            ol("[probe2] SIB ZERO HIT %s sel=%3u kr=0x%x out0=%llx",
-                               s_families[fam], sel, k2, (unsigned long long)out[0]);
-                    }
-                    const uint32_t wsel[2] = { 41, 48 };
-                    for (unsigned k = 0; k < 2; k++) {
-                        for (uint64_t w1 = 0; w1 < 56; w1++) {
-                            for (uint64_t w2 = 0; w2 < 14; w2++) {
-                                uint32_t on = 8; uint64_t out[8]; uint64_t sc[2]; kern_return_t k2;
-                                memset(out, 0, sizeof(out)); sc[0] = w1; sc[1] = w2;
-                                k2 = IOConnectCallMethod(conn, wsel[k], sc, 2, NULL, 0, out, &on, NULL, NULL);
-                                yield_now();
-                                if (!known_fail(k2))
-                                    ol("[probe2] SIB W12 HIT %s sel=%3u w1=%llu w2=%llu kr=0x%x",
-                                       s_families[fam], wsel[k], (unsigned long long)w1,
-                                       (unsigned long long)w2, k2);
-                            }
-                        }
-                    }
-                }
+                probe_io(conn, name, t, t == 1);
                 IOServiceClose(conn);
             }
             IOObjectRelease(svc);
