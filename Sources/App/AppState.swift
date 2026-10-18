@@ -128,6 +128,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* IOMFB v2 shape profiler: live-pool sels x arity/structure-size fingerprint. */
+    func iomfbV2() {
+        start {
+            nk_iomfb_v2_run()
+            return true
+        }
+    }
+
     func respring() {
         append("[respring] uid=\(geteuid())")
         append("[respring] needs root + frontboard entitlements, skipped on stock iOS")
