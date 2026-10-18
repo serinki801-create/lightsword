@@ -19,7 +19,6 @@
 #define rl(fmt_, ...) nk_log(fmt_, ##__VA_ARGS__)
 
 static volatile int _stop = 0;
-static pthread_barrier_t _barrier;
 
 static io_connect_t rk_open(const char *name, uint32_t type) {
     CFMutableDictionaryRef d = IOServiceMatching(name);
@@ -40,7 +39,7 @@ static io_connect_t rk_open(const char *name, uint32_t type) {
 static void *race_open_cycle(void *arg) {
     (void)arg;
     uint32_t ty = 0;
-    int opened = 0, closed = 0;
+    int opened = 0;
     for (int i = 0; i < 2000 && !_stop; i++) {
         io_connect_t c = rk_open("AppleKeyStore", ty & 15);
         if (c) { opened++; IOServiceClose(c); closed++; }
@@ -118,7 +117,7 @@ static void *race_agx(void *arg) {
         uint64_t in2[2] = { (uint64_t)(i & 63), 0 };
         uint8_t stb[64];
         memset(stb, 0xAA, sizeof(stb));
-        size_t osz1 = 16; uint64_t out[4]; uint32_t oc = 4; memset(out, 0, sizeof(out));
+        uint64_t out[4]; uint32_t oc = 4; memset(out, 0, sizeof(out));
         uint8_t o[16]; size_t osz = sizeof(o);
         kern_return_t kr;
         if (i & 1) kr = IOConnectCallMethod(c, in2[0], in2, 2, NULL, 0, out, &oc, NULL, NULL);
@@ -140,11 +139,6 @@ void nk_racer_run(void) {
     nk_filelog_open("racer");
     rl("[rc] racer session start");
     _stop = 0;
-    if (pthread_barrier_init(&_barrier, NULL, 5) != 0) {
-        rl("[rc] barrier init fail");
-        nk_filelog_close();
-        return;
-    }
     pthread_t th[5];
     int cnt = 0;
     if (pthread_create(&th[cnt++], NULL, race_open_cycle, NULL) != 0) cnt--;
@@ -155,6 +149,5 @@ void nk_racer_run(void) {
     rl("[rc] threads=%d", cnt);
     for (int i = 0; i < cnt; i++) pthread_join(th[i], NULL);
     rl("[rc] racer session end threads=%d", cnt);
-    pthread_barrier_destroy(&_barrier);
     nk_filelog_close();
 }
