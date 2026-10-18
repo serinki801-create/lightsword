@@ -54,9 +54,15 @@ struct ContentView: View {
 
                     Button {
                         state.racer()
-                            Button { state.ksmagic() } label: { Text(state.t("KS magic", "KS магия")) }
                     } label: {
                                 Label(state.t("Race harness", "Гонки"), systemImage: "lifepreserver")
+                    }
+                    .disabled(state.running)
+
+                    Button {
+                        state.ksmagic()
+                    } label: {
+                                Label(state.t("KS magic", "KS магия"), systemImage: "key")
                     }
                     .disabled(state.running)
                 } header: {
