@@ -214,4 +214,12 @@ final class AppState: ObservableObject {
             }
         }
     }
+
+    /* Protocol Phase-1 decision point: widened SCAL grid (8320 calls). */
+    func iogpuScal() {
+        start {
+            nk_iogpu_scal_run()
+            return true
+        }
+    }
 }

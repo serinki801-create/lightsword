@@ -61,6 +61,13 @@ struct ContentView: View {
                                 Label(state.t("IOGPU SCAL", "IOGPU SCAL"), systemImage: "cpu")
                     }
                     .disabled(state.running)
+
+                    Button {
+                        state.iogpuScal()
+                    } label: {
+                                Label(state.t("SCAL grid", "SCAL сетка"), systemImage: "tablecells")
+                    }
+                    .disabled(state.running)
                     } label: {
                                 Label(state.t("Race harness", "Гонки"), systemImage: "lifepreserver")
                     }
