@@ -80,7 +80,7 @@ static void probe_family(const char *cls) {
     CFMutableDictionaryRef md = IOServiceMatching(cls);
     if (!md) { smsg("[surface] %s: no matching dict", cls); return; }
     io_iterator_t it = 0;
-    kern_return_t kr = IOServiceGetMatchingServices(kIOMainPortDefault, md, &it);
+    kern_return_t kr = IOServiceGetMatchingServices(kIOMasterPortDefault, md, &it);
     u_int32_t ops = 0, oktypes = 0, anoms = 0;
     if (kr != KERN_SUCCESS) { smsg("[surface] %s: match kr=0x%x", cls, kr); return; }
     io_object_t svc;
