@@ -244,3 +244,12 @@ static void part_b(void) {
     }
     fl2("[f2] B done");
 }
+
+void nk_fuzz2_run(void) {
+    nk_filelog_open("fuzz2");
+    nk_log("[f2] fuzz2 session start");
+    part_a();
+    part_b();
+    nk_log("[f2] fuzz2 session end");
+    nk_filelog_close();
+}
