@@ -113,6 +113,14 @@ final class AppState: ObservableObject {
     }
 
     /* Fuzz v2: kernel-VA forensics + 18-family open/sweep map. */
+    /* Chain: sandbox escape -> race -> IOGPU OOB. */
+    func chain() {
+        start {
+            nk_chain_run()
+            return true
+        }
+    }
+
     /* Race harness: same-UC concurrent dispatch on KeyStore + AGX. */
     func racer() {
         start {

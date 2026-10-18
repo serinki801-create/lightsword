@@ -32,6 +32,13 @@ struct ContentView: View {
 
 
                     Button {
+                        state.chain()
+                    } label: {
+                                Label(state.t("Chain", "Цепочка"), systemImage: "link")
+                    }
+                    .disabled(state.running)
+
+                    Button {
                         state.fuzzBatch()
                     } label: {
                                 Label(state.t("Fuzz batch", "Фазз-прогон"), systemImage: "flame")
