@@ -53,17 +53,21 @@ static void f2_read(mach_vm_address_t a, void *out, vm_size_t n) {
     if (r != KERN_SUCCESS) memset(out, 0, n);
 }
 
-/* ---- PART A: kernel-VA candidate forensics ---- */
+/* ---- PART A: kernel-VA candidate forensics (fast chunked) ---- */
 static void part_a(void) {
-    fl2("[f2] A: kernel-VA forensics");
+    fl2("[f2] A: kernel-VA forensics (chunked)");
     static const uint64_t pres[5] = {
         PRE_SLIDE_TEXT, PRE_SLIDE_TEXT_EXEC, PRE_SLIDE_DATA_CONST,
         PRE_SLIDE_DATA_SPTM, PRE_SLIDE_DATA
     };
     static const char *presn[5] = { "TEXT", "TEXEC", "DCONST", "SPTM", "DATA" };
+    /* only the real kernel-VA window counts: image base + kASLR span */
+    static const uint64_t klo = 0xfffffff007000000ULL;
+    static const uint64_t khi = 0xfffffff020000000ULL;
+    static uint8_t chunk[65536];
     mach_vm_address_t addr = 0;
     int regions = 0, hits = 0;
-    while (regions < 4096 && hits < 32) {
+    while (regions < 1024 && hits < 16) {
         mach_vm_size_t size = 0;
         uint32_t depth = 4096;
         vm_region_submap_info_data_64_t info;
@@ -75,45 +79,46 @@ static void part_a(void) {
         if (!(info.protection & VM_PROT_READ) || size < 8) { yieldf(); continue; }
         uint64_t base = addr;
         size_t span = size;
-        if (span > (1ULL << 20)) span = (1ULL << 20);
-        size_t words = span / 8;
-        for (size_t w = 0; w < words; w++) {
-            uint64_t v = 0;
-            f2_read(base + w * 8, &v, 8);
-            if (!f2_is_kernel_va(v) || f2_is_poison(v)) continue;
-            uint64_t off = w * 8;
-            fl2("[f2] VA 0x%llx region 0x%llx size 0x%llx off 0x%lx prot %u share %u depth %u",
-                (unsigned long long)v, (unsigned long long)base,
-                (unsigned long long)size, (unsigned long)off,
-                info.protection, info.share_mode, depth);
-            for (int k = 0; k < 5; k++) {
-                if (v >= pres[k] && v - pres[k] < 0x4000000)
-                    fl2("[f2]   delta vs %s_pre = 0x%llx",
-                        presn[k], (unsigned long long)(v - pres[k]));
+        if (span > (4ULL << 20)) span = (4ULL << 20);
+        for (uint64_t off = 0; off + sizeof(chunk) <= span; off += sizeof(chunk)) {
+            size_t got = sizeof(chunk);
+            kern_return_t r = vm_read_overwrite(mach_task_self(),
+                base + off, sizeof(chunk), (vm_address_t)(uintptr_t)chunk, &got);
+            if (r != KERN_SUCCESS) break;
+            for (size_t i = 0; i + 8 <= got; i += 8) {
+                uint64_t v;
+                memcpy(&v, chunk + i, 8);
+                if (v < klo || v > khi) continue;
+                uint64_t ho = off + i;
+                fl2("[f2] kVA 0x%llx in region 0x%llx size 0x%llx off 0x%lx prot %u share %u",
+                    (unsigned long long)v, (unsigned long long)base,
+                    (unsigned long long)size, (unsigned long)ho,
+                    info.protection, info.share_mode);
+                for (int k = 0; k < 5; k++)
+                    if (v >= pres[k] && v - pres[k] < 0x4000000)
+                        fl2("[f2]   delta vs %s_pre = 0x%llx",
+                            presn[k], (unsigned long long)(v - pres[k]));
+                uint8_t buf[64];
+                uint64_t lo = base + (ho > 24 ? ho - 24 : 0);
+                f2_read(lo, buf, sizeof(buf));
+                char hex[200];
+                size_t p = 0;
+                for (int q = 0; q < 16 && p < sizeof(hex) - 3; q++)
+                    p += (size_t)snprintf(hex + p, 3, "%02x", buf[q]);
+                fl2("[f2]   bytes: %s", hex);
+                hits++;
+                yieldf();
+                if (hits >= 16) break;
             }
-            uint64_t lo = base + (off > 32 ? off - 32 : 0);
-            uint8_t buf[96];
-            f2_read(lo, buf, sizeof(buf));
-            char hex[200];
-            size_t p = 0;
-            for (int i = 0; i < 16 && p < sizeof(hex) - 3; i++)
-                p += (size_t)snprintf(hex + p, 3, "%02x", buf[i]);
-            fl2("[f2]   bytes: %s", hex);
-            int rep = 0;
-            for (size_t q = 0; q + 8 <= words; q += 512) {
-                uint64_t v2 = 0;
-                f2_read(base + q * 8, &v2, 8);
-                if (v2 == v) rep++;
-            }
-            fl2("[f2]   repeats(sampled): %d", rep);
-            hits++;
-            yieldf();
-            if (hits >= 32) break;
+            if (hits >= 16) break;
+            if ((off & 0xFFFFF) == 0) yieldf();
         }
-        if (hits >= 32) break;
+        if (hits >= 16) break;
         yieldf();
         addr += size;
     }
+    if (hits == 0)
+        fl2("[f2] A VERDICT: no kernel-VA pointer in user-visible regions");
     fl2("[f2] A done regions=%d hits=%d", regions, hits);
 }
 
