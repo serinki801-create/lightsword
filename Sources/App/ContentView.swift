@@ -54,6 +54,13 @@ struct ContentView: View {
 
                     Button {
                         state.racer()
+
+                    Button {
+                        state.iogpuProbe2()
+                    } label: {
+                                Label(state.t("IOGPU SCAL", "IOGPU SCAL"), systemImage: "cpu")
+                    }
+                    .disabled(state.running)
                     } label: {
                                 Label(state.t("Race harness", "Гонки"), systemImage: "lifepreserver")
                     }
