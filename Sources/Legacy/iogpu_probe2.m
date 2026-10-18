@@ -5,12 +5,14 @@
      - row-walker engine fn 0xfffffff009f56cc8 — cmp w1,#55 /
        cmp w2,#13 selector gates over 24-byte-strided method rows.
    Device plan (watchdog-safe):
-     - IOGPU service only, types 1..33, per-conn ZERO sweep sel 0..127;
-     - type-1 conn additionally: STRC 116B (sel 0..127), SCAL scalar 0..64
-       (full sel 0..127), W12 two-scalar (w1 0..55 x w2 0..13) on sel41/48,
-       SCST scalar 0..15 + 116B struct (sel 24..59).
-     - known_fail now masks the real wire codes 0xe00002c2/0xe00002c7/0xe00002be,
-       so ONLY true anomalies print.
+     - families: IOGPU (types 1..40, deep: STRC/SCAL/W12/SCST) +
+       AGXAccelerator/IOAccelerator/IOGraphicsControl/IOGPUDevice
+       (types 0..40, ZERO + W12 passes);
+     - IOGPU full ZERO sel 0..127 and SINGLE-scalar SCAL 0..64 sel 0..127;
+     - W12 two-scalar (w1 0..55 x w2 0..13) on the row-walker callers
+       sel41/sel48 (and sel0 connectors on siblings);
+     - known_fail masks wire codes 0xe00002c2/0xe00002c7/0xe00002be,
+       so ONLY true anomalies print;
      - yields every ~256 calls so LiveContainer's watchdog stays quiet.
    A hit prints one log line: kind / type / sel / scal / kr / out0 / out1. */
 #import <IOKit/IOKitLib.h>
@@ -133,6 +135,19 @@ static void probe_io(io_connect_t conn, const char *name, uint32_t t) {
     }
 }
 
+/* Family sweep — the o2 (28-row) / engine-call surface may belong to a sibling
+   driver class (AGX*), not the IOGPU entry point. Names of families with
+   user-client tables on 23C55; unknown names cost one IOServiceGetMatchingServices
+   call each and return 0 services — harmless. */
+static const char *s_families[] = {
+    "IOGPU",
+    "AGXAccelerator",
+    "IOAccelerator",
+    "IOGraphicsControl",
+    "IOGPUDevice"
+};
+#define NFAM ((int)(sizeof(s_families) / sizeof(s_families[0])))
+
 void nk_iogpu_probe2_run(void) {
     io_iterator_t it = 0;
     io_service_t svc;
@@ -140,32 +155,66 @@ void nk_iogpu_probe2_run(void) {
     kern_return_t kr;
     uint32_t opened = 0;
 
-    kr = IOServiceGetMatchingServices(kIOMasterPortDefault,
-                                      IOServiceMatching("IOGPU"), &it);
-    if (kr != KERN_SUCCESS) {
-        ol("[probe2] IOGPU enum failed kr=0x%x", kr);
-        return;
-    }
-    ol("[probe2] IOGPU service found, probing types 1..33");
-
-    while ((svc = IOIteratorNext(it))) {
-        IORegistryEntryGetName(svc, name);
-        for (uint32_t t = 1; t <= 33; t++) {
-            io_connect_t conn = MACH_PORT_NULL;
-            kr = IOServiceOpen(svc, mach_task_self(), t, &conn);
-            if (kr != KERN_SUCCESS || !conn) {
-                if (t <= 6 || t == 33)
-                    ol("[probe2] type=%u open kr=0x%x", t, kr);
-                continue;
-            }
-            ol("[probe2] type=%u OPENED conn=0x%x", t, conn);
-            opened++;
-            probe_io(conn, name, t);
-            IOServiceClose(conn);
+    for (int fam = 0; fam < NFAM; fam++) {
+        kr = IOServiceGetMatchingServices(kIOMasterPortDefault,
+                                          IOServiceMatching(s_families[fam]), &it);
+        if (kr != KERN_SUCCESS) {
+            ol("[probe2] %s enum failed kr=0x%x", s_families[fam], kr);
+            continue;
         }
-        IOObjectRelease(svc);
-        svc = 0;
+        uint32_t found = 0;
+        while ((svc = IOIteratorNext(it))) {
+            IORegistryEntryGetName(svc, name);
+            found++;
+            /* IOGPU keeps its legacy deep passes; siblings get ZERO+W12 */
+            int is_iogpu = (fam == 0);
+            for (uint32_t t = (is_iogpu ? 1 : 0); t <= 40; t++) {
+                io_connect_t conn = MACH_PORT_NULL;
+                kr = IOServiceOpen(svc, mach_task_self(), t, &conn);
+                if (kr != KERN_SUCCESS || !conn) {
+                    if (t == 0 || (is_iogpu && (t <= 6 || t == 33)))
+                        ol("[probe2] %s type=%u open kr=0x%x", s_families[fam], t, kr);
+                    continue;
+                }
+                ol("[probe2] %s type=%u OPENED conn=0x%x", s_families[fam], t, conn);
+                opened++;
+                if (is_iogpu) {
+                    probe_io(conn, name, t);
+                } else if (t == 0) {
+                    /* zero-arg pass only, then the W12 walker combos */
+                    for (uint32_t sel = 0; sel < 128; sel++) {
+                        uint32_t on = 8; uint64_t out[8]; kern_return_t k2;
+                        memset(out, 0, sizeof(out));
+                        k2 = IOConnectCallMethod(conn, sel, NULL, 0, NULL, 0, out, &on, NULL, NULL);
+                        yield_now();
+                        if (!known_fail(k2))
+                            ol("[probe2] SIB ZERO HIT %s sel=%3u kr=0x%x out0=%llx",
+                               s_families[fam], sel, k2, (unsigned long long)out[0]);
+                    }
+                    const uint32_t wsel[2] = { 41, 48 };
+                    for (unsigned k = 0; k < 2; k++) {
+                        for (uint64_t w1 = 0; w1 < 56; w1++) {
+                            for (uint64_t w2 = 0; w2 < 14; w2++) {
+                                uint32_t on = 8; uint64_t out[8]; uint64_t sc[2]; kern_return_t k2;
+                                memset(out, 0, sizeof(out)); sc[0] = w1; sc[1] = w2;
+                                k2 = IOConnectCallMethod(conn, wsel[k], sc, 2, NULL, 0, out, &on, NULL, NULL);
+                                yield_now();
+                                if (!known_fail(k2))
+                                    ol("[probe2] SIB W12 HIT %s sel=%3u w1=%llu w2=%llu kr=0x%x",
+                                       s_families[fam], wsel[k], (unsigned long long)w1,
+                                       (unsigned long long)w2, k2);
+                            }
+                        }
+                    }
+                }
+                IOServiceClose(conn);
+            }
+            IOObjectRelease(svc);
+            svc = 0;
+        }
+        IOObjectRelease(it);
+        it = 0;
+        ol("[probe2] family %s found=%u", s_families[fam], found);
     }
-    IOObjectRelease(it);
     ol("[probe2] done opened=%u ops=%u", opened, s_ops);
 }
