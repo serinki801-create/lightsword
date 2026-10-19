@@ -113,11 +113,21 @@ final class AppState: ObservableObject {
     }
 
     /* Fuzz v2: kernel-VA forensics + 18-family open/sweep map. */
-    /* Chain: sandbox escape -> race -> IOGPU OOB. */
+    /* Chain: pivot completes FIRST; then IOGPU OOB 24257 -> KeyStore.
+       Race lane removed per dj. A press before the pivot finishes only
+       queues the request — the gate event fires it. */
     func chain() {
         start {
-            nk_jsbridge_log("GEN", "manual chain pressed (button)")
-            nk_chain_run()
+            if NKBridge.autoChainFired {
+                nk_jsbridge_log("GEN", "manual chain pressed - ignored, chain already scheduled/ran")
+            } else if NKBridge.pivotDone {
+                NKBridge.autoChainFired = true
+                nk_jsbridge_log("GEN", "manual chain pressed (button, pivot done) — running now")
+                nk_chain_run()
+            } else {
+                NKBridge.chainPending = true
+                nk_jsbridge_log("GEN", "manual chain pressed - queued until pivot RECON COMPLETE")
+            }
             return true
         }
     }

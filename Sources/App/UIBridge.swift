@@ -34,7 +34,9 @@ enum NKBridge {
     static var lastScanAt = Date.distantPast
     static var huntAt = Date.distantPast   /* W-T3 pivot in flight (set by "W-T3 pivot begin") */
     static var pivotFired = false          /* one-shot guard: ECHO-OK pivot dispatch (mid-recon re-dispatch killed trace (2) run2) */
+    static var pivotDone = false           /* "RECON COMPLETE" seen — the pivot's full success path finished */
     static var autoChainFired = false      /* one-shot guard: native chain fires only after the pivot recon completes */
+    static var chainPending = false        /* manual press before pivotDone: queued, runs at the gate */
 
     static func touch(_ tag: String, _ msg: String) {
         lastAnyAt = Date()
@@ -144,16 +146,20 @@ final class NKScriptMessageHandler: NSObject, WKScriptMessageHandler {
             /* AUTO-CHAIN (dj's order: pivot completes FULLY, IOGPU OOB 24257
                only then). The gate = the pivot's own final line —
                "RECON COMPLETE" is emitted by the JS after targets → dives →
-               the whole WPROBE suite, and ONLY on the success path: any
-               mid-recon death returns early and the line never shows, so
-               the native chain waits for a pivot that actually held
-               together. One-shot nk_chain_run 1 s later, runloop-ordered
-               like the button path. Manual «Цепочка» stays as override. */
-            if payload.tag == "WT3", payload.msg.contains("RECON COMPLETE"), !NKBridge.autoChainFired {
-                NKBridge.autoChainFired = true
-                nk_jsbridge_log("GEN", "auto chain start (recon-complete-gate)")
-                Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { _ in
-                    nk_chain_run()
+               the whole WPROBE suite, and ONLY on the success path. Fires
+               (a) automatically on the gate, (b) immediately if the manual
+               button queued a request and the pivot then completed. Mid-run
+               deaths never emit the line, so the native chain waits for a
+               pivot that actually held together. */
+            if payload.tag == "WT3", payload.msg.contains("RECON COMPLETE") {
+                NKBridge.pivotDone = true
+                if !NKBridge.autoChainFired || NKBridge.chainPending {
+                    NKBridge.autoChainFired = true
+                    NKBridge.chainPending = false
+                    nk_jsbridge_log("GEN", "auto chain start (recon-complete-gate)")
+                    Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { _ in
+                        nk_chain_run()
+                    }
                 }
             }
         }
