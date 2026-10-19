@@ -33,6 +33,8 @@ enum NKBridge {
     static var lastAnyAt = Date.distantPast
     static var lastScanAt = Date.distantPast
     static var huntAt = Date.distantPast   /* W-T3 pivot in flight (set by "W-T3 pivot begin") */
+    static var pivotFired = false          /* one-shot guard: ECHO-OK pivot dispatch (mid-recon re-dispatch killed trace (2) run2) */
+    static var autoChainFired = false      /* one-shot guard: native chain fires only after the pivot recon completes */
 
     static func touch(_ tag: String, _ msg: String) {
         lastAnyAt = Date()
@@ -130,11 +132,24 @@ final class NKScriptMessageHandler: NSObject, WKScriptMessageHandler {
             }
             /* AUTO-PIVOT: the moment the page reports the W-T2 echo verdict
                (AAR/AAW proven in the renderer) fire W-T3 natively — no button,
-               dj asked for the automatic chain. One-shot per session; the
-               reload resets nothing (W-T2 re-proves itself each run anyway). */
-            if payload.tag == "RESULT", payload.msg.contains("ECHO OK") {
+               dj asked for the automatic chain. One-shot PER SESSION — the
+               earlier unguarded version re-dispatched on every repeat ECHO OK
+               and killed the recon mid-dive (trace (2) run2 blackhole). */
+            if payload.tag == "RESULT", payload.msg.contains("ECHO OK"), !NKBridge.pivotFired {
+                NKBridge.pivotFired = true
                 Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { _ in
                     WebKitHolder.shared.firePivot()
+                }
+            }
+            /* AUTO-CHAIN (dj's order: pivot FIRST, IOGPU OOB only after): the
+               WPROBE3 line is the recon's last stage — whatever it says, the
+               write-probe suite is done and the recon held together. One-shot
+               nk_chain_run 1 s later, on the runloop like the button path.
+               Manual «Цепочка» button stays as the override. */
+            if payload.tag == "WT3", payload.msg.contains("WPROBE3"), !NKBridge.autoChainFired {
+                NKBridge.autoChainFired = true
+                Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { _ in
+                    nk_chain_run()
                 }
             }
         }

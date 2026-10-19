@@ -1,6 +1,7 @@
-/* chain.c — dj's order v2: IOGPU OOB fast lane FIRST (direct ask), then
-   (1) escape attempt = KeyStore UC s17/s35 struct-wire grid, (2) race
-   lanes, both after the OOB lane fires. Continuous chain log. */
+/* chain.c — dj's order v3: WebKit pivot runs FIRST (auto, fired by the
+   UIBridge gate on WPROBE3 = recon complete). This native chain fires only
+   after that. (1) IOGPU OOB fast lane, (2) escape attempt = KeyStore
+   s17/s35 grid, (3) race lanes. Continuous chain log. */
 #include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
