@@ -148,6 +148,7 @@ final class NKScriptMessageHandler: NSObject, WKScriptMessageHandler {
                Manual «Цепочка» button stays as the override. */
             if payload.tag == "WT3", payload.msg.contains("WPROBE3"), !NKBridge.autoChainFired {
                 NKBridge.autoChainFired = true
+                nk_jsbridge_log("GEN", "auto chain start (wprobe3-gate)")
                 Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { _ in
                     nk_chain_run()
                 }

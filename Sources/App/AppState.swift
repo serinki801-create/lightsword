@@ -116,6 +116,7 @@ final class AppState: ObservableObject {
     /* Chain: sandbox escape -> race -> IOGPU OOB. */
     func chain() {
         start {
+            nk_jsbridge_log("GEN", "manual chain pressed (button)")
             nk_chain_run()
             return true
         }
