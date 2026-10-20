@@ -75,64 +75,48 @@ corrections._
 
 ## Selected path to kernel R/W
 
-**AIO kevent UAF (track B).** It is the only route where this repo already holds a
-**device-proven** primitive, and it needs no new CVE, no new kext and no new
-entry point.
+**Not** the AIO track (deferred): the `aio_workq_entry` UAF is proven on device,
+but turning it into a write needs a controlled object inside `aio_workq_zonep`
+(224 B) and the only spray in the tree is Mach-port based, which never lands in
+that zone. Details and the honest status are in `VULNS.txt` §1.
 
-The UAF: an app does `aio_read` with `SIGEV_KEVENT` (kernel creates an
-`aio_workq_entry` in `aio_workq_zonep` and hangs a knote on the kqueue), then a
-second `aio_read` with `SIGEV_NONE` acts as a **donor** — its entry is freed and
-LIFO-claimed into the same slot. The surviving dangling knote still points at
-that slot, and when the kernel delivers the event `filt_aioprocess()` walks the
-**freed** entry and hands its fields to user space:
+The route in flight is **DCP pipe-limit OOB-write + libxpc sandbox escape**:
 
-```
-kev.ext[0] = entry->errorval    (+0x28)
-kev.ext[1] = entry->returnval   (+0x20)
-kev.ident  = entry->uaiocbp     (+0x48)
-kev.udata  = aiocb->sival_ptr  (+0x50)
-```
+1. **DCP (`AppleMobileDispH14P-DCP`) — OOB write, [LIVE].** In iOS 26.3 Apple
+   added pipe accounting and a platform limit (`"Platform limits applied %u
+   overall limited %u"`, `"Update Ext Pipe state: is_plug %u total count %u limited
+   %u Apple Display %u pipes %u"`, counters in `__DATA_CONST +0x668/+0x66c/+0x670`).
+   In 26.2 that code does not exist: there is no limit on how many display pipes
+   can be created, while 26.3 indexes a fixed array by a vtable-returned count
+   (`0x947807c`: `cmp w0,#4` -> bail, then `add x8,x21,w0,uxtw; sub x20,x8,#4`).
+   No limit ⇒ create past the array capacity ⇒ OOB write.
+2. **CVE-2026-20667 (libxpc) — sandbox escape, [LIVE].** Fixed in 26.3, so
+   unpatched on 23C55; "a logic issue was addressed with improved checks" means a
+   missing validation. XPC is reachable from any sandboxed app, so this is the
+   cheapest new reverse-engineering target. Combined with the already-proven
+   WebKit renderer primitive (W-T0/W-T2) it yields native code outside the
+   sandbox, which is what makes the entitlement-gated IOKit clients reachable.
+3. **CVE-2026-20615 / -20617 (CoreServices → root, [LIVE]).** Csaba Fitzl
+   (@theevilbit) and Gergely Kalman; path handling + race condition.
+4. **Regression hunting 26.1 → 26.2.** 26.1's kernelcache is now local
+   alongside 26.2 and 26.3, and the diff harness is in
+   `~/ios262_lab/diff27/` (`regress.py`, `removed_checks.py`, `filter_regress.py`).
+   Between 26.1 and 26.2 the kernel lost **107 code paths** and AGXG14P 21.
+   A dropped bound check there is a bug nobody has filed, so nobody patched it.
 
-⇒ **arbitrary kernel read from the app, confirmed on device.**
-
-The write is the *same* primitive, because all three dangerous operations read
-their operands out of the entry itself:
-
-| in `filt_aioprocess` | reads | effect |
-|---|---|---|
-| `TAILQ_REMOVE(entry)` | `+0x10` prev, `+0x18` next | writes `*prev = next` → **write-what-where** |
-| `aio_entry_unref(entry)` | `+0x2C` refcount | refcount 0/1 ⇒ **double free** → freelist poison |
-| `aio_proc_lock(*(entry+0x40))` | `+0x40` procp | procp 0 ⇒ **PANIC FAR=0x58** (the observed reboot) |
-
-Today the slot is zeroed on free, so there is nothing to write through — hence
-"write dead". The missing piece is a **spray into `aio_workq_zonep`** (224 B /
-`0xE0`) that reclaims the freed slot with *our* content. Then:
-
-1. `TAILQ_REMOVE` writes through our `prev`/`next` → write-what-where
-   (writable kernel function pointer, or `ucred->cr_uid` at `ucred+0x18`).
-2. `aio_entry_unref` double-frees → poison the zone freelist → allocate a
-   controlled object over it → hijack a callback → kernel code exec → R/W.
-
-`Sources/Legacy/nk_spray.m` is a **Mach port** spray and does not touch the aio
-zone — a dedicated zone spray is needed. Everything else (read channel proven,
-entry layout in `aio_kevent_rw.h`, root escalation in `privesc.c`) is already in
-the tree. Roadmap: `VULNS.txt` §1.
+`VULNS.txt` §6 documents the harness and the first results.
 
 ## Further fate
 
-The roadmap (subject to device verification):
-
-1. **Zone spray for `aio_workq_zonep`** — reclaim the freed `aio_workq_entry`
-   slot with controlled content; turn the proven read into a write.
-2. **Write-what-where** via `TAILQ_REMOVE` on the reclaimed entry, or the
-   double-free path for freelist poisoning.
-3. **Data-only root** from the write: `ucred->cr_uid = 0`, sandbox profile
-   bypass, `csflags` — no PAC bypass needed.
-4. Keep the WebKit pivot chassis (W-T0/W-T2, proven) as the route to
-   non-sandbox user clients, and chain it with a libxpc sandbox escape
-   (CVE-2026-20667) if a direct IOKit entry is not reachable.
-5. Keep the IOGPU 24257 line documented but closed on 26.2 — the 18.4 fix is in
-   the 23C55 binary.
+1. **DCP pipe path** — find the 26.2 equivalent of 26.3 `0x947807c`, confirm the
+   missing bound, then reach the DCP user client from the sandbox and overflow
+   the pipe array.
+2. **libxpc** — diff the 26.2/26.3 xpc handlers for the added check; XPC is
+   callable from a plain app.
+3. **Regression sweep** — run `filter_regress.py` over the 107 removed kernel
+   code paths (26.1→26.2) looking for `cmp #imm` + branch that became `cbz`.
+4. Keep the WebKit pivot chassis (W-T0/W-T2, proven) as the way in.
+5. IOGPU 24257 stays documented but closed on 26.2 (the 18.4 fix is present).
 
 ## Build
 
