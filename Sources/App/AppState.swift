@@ -105,6 +105,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* OOB hunt — systematic struct-input fuzz over every reachable user
+       client, with a durable log line before every call so the last line
+       names the call that panicked the kernel. */
+    func oobHunt() {
+        start {
+            nk_oob_hunt_run()
+            return true
+        }
+    }
+
     /* AIO kevent UAF (Track B / B12) — standalone runner.
        Durable log: Documents/aio_uaf.log */
     func aioUaf() {

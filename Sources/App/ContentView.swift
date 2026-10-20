@@ -69,6 +69,13 @@ struct ContentView: View {
                     }
                     .disabled(state.running)
 
+                    Button {
+                        state.oobHunt()
+                    } label: {
+                        Label(state.t("OOB Hunt", "OOB Hunt"), systemImage: "scope")
+                    }
+                    .disabled(state.running)
+
                     NavigationLink {
                         WebKitStageView()
                     } label: {
