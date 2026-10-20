@@ -37,6 +37,8 @@ Kernel: xnu-12377.62.10 (источник не опубликован). Delivery
 | WebKit W-T3 (native pivot) | ✅✅ FINGERPRINT НА УСТРОЙСТВЕ + page-major sweep + dead-slot петля (device 21:59: run1 умер посреди plan-строки (5 списков, ~1.5KB одним bridge-message — C-буферы 512B); 22:02 фикс: план построчно с дренажем, run2 прошёл sweep целым; 22:10 аудит: GETDEAD никто не слал — dead-list всегда пуст; 22:12 roundtrip по образцу claim; 14:58 PHASE 2 mprotect: stage-1 на сайте делает mprotect(RWX)+br, payload живёт в scratch-странице — потолок 256B снят, юнит native-pivot-mprotect) |
 | WebKit W-T5 (aio из renderer) | ⏳ второй шанс на dummynet-гейт (R22) |
 | T2 frame probe (1000 раундов) | ⏸ устройство, ПОСЛЕ ребута (R9); 50x паникует ядро (механизм огня живой — PAC/TRASHIT подтверждены) |
+| **SPTM-прошивка 23C55** | ✅ **ДОСТУПНА ОФФЛАЙН** — `Firmware/sptm.t8110.release.im4p` в IPSW НЕ зашифрован → Mach-O arm64e 1 064 992 B (`Artifacts/sptm/sptm.macho`). Полный статический анализ SPTM теперь возможен (Docs/sptm_23c55.md) |
+| SPTM race bypass (stale frame type) | 🆕 **КАНДИДАТ S1** — TOCTOU в `pmap_recycle_page` (3 неатомарных SPTM-раунд-трипа, retype-возврат игнорится, SPTM отклоняет retype при несовпадении типа) → кадр уходит в free-list с типом ≠ XNU_DEFAULT |
 | T4 benign fire | ⛔ НЕ начинать: не закрыты предусловия (occupancy-map, fingerprint, TRASHIT-пропагейшн) |
 
 ---
@@ -209,7 +211,7 @@ IOGPU 130.13/130.14 (26.4/26.5) как на версии без этого по�
 | JSC MapIterationEntryKey type confusion | DFG-узел объявлен Int32, возвращает JSValue → UAF → addrof/AAR/AAW | ✅ **РАБОТАЕТ** [VP-DEVICE], W-T0 confirmed 9+ прогонов |
 | B12 aio_workq_entry × kevent64 | ядерный UAF aio/proc link | ⚠️ frame PROVEN, запись **МЁРТВА** (док-во ниже) |
 | CVE-2026-64788 IOGPUFamily UAF (dimensions) | create_resource_iosurface без release при overflow | ❌ **НЕ УЯЗВИМ**: валидатор стоит ДО вставки (@0xfffffff009f4e5c0) |
-| CVE-2025-24257 IOGPUFamily bitmap underflow | (capacity>>6)-1 без проверки ≥64 | 🔶 **БАГ В КОДЕ ЕСТЬ**, но из sandbox **НЕ ДОСТИЖИМ** (см. 4.4.5) |
+| CVE-2025-24257 IOGPUFamily bitmap underflow | obj+40=(capacity>>6)-1, capacity<64 ⇒ 0xffffffff; unchecked-путь grow @0x9f64910 (capacity=2*count, count<32) | 🟢 **ДОСТИЖИМ ИЗ SANDBOX** — sel **64**, type 1 (`0x7e67c58`, 112 сел.) — см. 4.4.9 |
 | CVE-2026-43743 IOGPUFamily race | — | ❌ закрыта как источник (нет точки входа) |
 
 ### 4.4.3 ЧТО РАБОТАЕТ (доказано на устройстве)
@@ -267,41 +269,104 @@ trace.log / `WT3-PHASE2 SHELLCODE PASS marker=0x5a5aa15a5a5aa15a canary=0x4d5052
 
 ### 4.4.8 ДОБАВЛЕННЫЕ УЯЗВИМОСТИ (2026-10-14/15)
 - CVE-2026-64788 (IOGPUFamily UAF, bytev0rtex PoC) — интегрирован, прогнан, **НЕ уязвим на 23C55**.
-- CVE-2025-24257 (IOGPUFamily bitmap underflow, wh1te4ever PoC + Wang Yu разбор) — статически подтверждён в 129.3.2, **не reachable** (см. 4.4.5).
+- CVE-2025-24257 (IOGPUFamily bitmap underflow, wh1te4ever PoC + Wang Yu разбор) — статически подтверждён в 129.3.2 и **reachable из sandbox** через sel 64 / type 1 (см. 4.4.9 — прежний вывод «не reachable» был из-за неверной таблицы и неверного селектора).
 - CVE-2026-28992 IOHIDFamily race / CVE-2026-43668/43684/43686 / CVE-2026-43810 — отслеживаются, PoC публично недоступен.
 
-### 4.4.9 CVE-2025-24257 — ТУПИК ИЗ SANDBOX (2026-10-15 18:10, доказано)
+### 4.4.9 CVE-2025-24257 — ОПРОВЕРГНУТО: ПУТЬ ЕСТЬ, И БЕЗ WEBKIT-ПИВОТА (2026-10-19 20:20)
 
-Полная попытка достичь группового OOB из app-sandbox'а — **завершена тупиком**:
+**Прежний вывод «тупик из sandbox» был ОШИБОЧНЫМ.** Ошибка — в адресе dispatch-таблицы
+и в номере селектора. Ниже — как получено и как проверяется.
 
-1. **Dispatch-таблица** группы найдена: @ `0xfffffff007e668b0`, 12+ методов,
-   запись 24 байта = `{chained fn; chained fn2; u32 inScalar; u32 inStruct; u32 outScalar}`.
-   Групповой создатель = **селектор 11**, `fn=0xfffffff009f4e0bc`, `inScalar=0 inStruct=0 outScalar=0`.
-2. **Эмпирический поиск клиента**: 1094 сервиса реестра перечислены, **99 открыты**,
-   у каждого открытого пробиты селектор 11 (нулевая форма) и все типы 1..8.
-   **Итог: sel11-hits=0.** Таблица @0xfffffff007e668b0 не принадлежит ни одному
-   открываемому из sandbox клиенту.
-3. **type=1 (IOGPUDeviceUserClient)** — селектор 8 живой, но его хендлер
-   `0xfffffff009f4e700` — это **query** (сумма размеров через `[x0+176]`/`[x0+184]`,
-   рабочий вызов `0xfffffff009f81c28`), отказая ветка @0x9f4e82c → `0xe00002be`.
-   Не групповой путь.
-4. **type=33 (IOGPUMemoryInfoUserClient)** — открывается, но молчит на всех
-   селекторах 0..23 с любым payload'ом.
-5. PoC Wang Yu'я использовал `init_type=5` — **на 23C55 type 5 НЕ открывается**
-   (живы только 1 и 33).
+#### 1. Настоящая dispatch-таблица
 
-**Вывод: CVE-2025-24257 на 23C55 статически присутствует (init @0xfffffff009f612a4),
-но его dispatch-вход принадлежит классу, недостижимому из sandboxed-приложения.**
-Примитив OOB из приложения получить НЕЛЬЗЯ.
+`hunt/dispatch_23c55.txt` / `hunt/blocks/23c55_IOGPUFamily.tsv` дают:
 
-**Единственный путь к нему — через WebKit-пивот**: WebContent GPU-entitled
-(WebGL/ANGLE активны per fingerprint), `IOServiceOpen(IOGPU, 5)` оттуда должен
-проходить → dispatch@0xfffffff007e668b8 (sel=11) достижим → `capacity=1` →
-`[obj+40]=0xFFFFFFFF` → cleanup @0xfffffff009f5f084 уводит петлю
-`arrayC[(group_idx<<6)+bucket]` в **OOB read/write на 32GB**.
+```
+com.apple.iokit.IOGPUFamily | type=1 | stride=0x18 | n=112 | таблица @ 0xfffffff007e67c58
+```
 
-**Следовательно OOB-примитив и kernel r/w — оба заперты за W-T3.**
-Ближайшее действие: WebKit-ран, в котором hunt ловит код-сайт.
+Прежняя таблица `@0xfffffff007e668b0` — **не** IOGPUFamily (это vtable
+IOGPUVirtualMemory, §4.4.10 это уже отметил). Настоящая таблица — 112 селекторов
+на type 1, а не 12.
+
+#### 2. Групповой создатель = селектор 64, а не 11
+
+Обратные ссылки в `hunt/dis/23c55_IOGPUFamily.dis` (единственный caller каждого):
+
+```
+0x9f7396c: bl 0x9f60a84   IOGPUResource::newResourceGroup   (единственный caller)
+0x9f56e48: bl 0x9f7314c   group creator                       (caller из 0x9f56df4)
+0x9f542f0: bl 0x9f56df4                                      (caller из 0x9f541ec)
+```
+
+`hunt/blocks/23c55_IOGPUFamily.tsv:9` →
+`com.apple.iokit.IOGPUFamily|1|0x18|112|64|0xfffffff009f541ec`
+→ **селектор 64**, обработчик `0xfffffff009f541ec`.
+
+Полный путь:
+`sel 64 → 0x9f541ec → 0x9f56df4 → 0x9f7314c → 0x9f60a84 → 0x9f611ec (IOGPUGroupMemory::init)`.
+
+**Селектор 64 живёт на type 1** — а type 1 по §4.4.9 (п.3) **уже открывается из
+sandbox** (`IOServiceOpen(IOGPU, 1)` → успех). Прежняя эмпирика «sel11-hits=0»
+остаётся верной для sel 11, но sel 11 — это другой метод; **sel 64 не пробовали
+вообще**, и никогда не передавали валидный struct ≥ 88 байт.
+
+#### 3. Уточнённый корень CVE-2025-24257
+
+`IOGPUGroupMemory::init` @ `0xfffffff009f61200`:
+
+```
+0x9f61220: str   w1, [x0, #32]      ; obj+32 = capacity
+0x9f612a4: lsr   w9, w21, #6
+0x9f612a8: sub   w9, w9, #1
+0x9f612ac: stp   w8, w9, [x19, #36] ; obj+36 = capacity-1, obj+40 = (capacity>>6)-1
+```
+
+`obj+40` — и счётчик бакетов, и маска индекса бакета
+(`0x9f63148: ldr w11,[x23,#40]; and w11,w11,x26,lsr #6` → bucket = index>>6).
+При `capacity < 64` → `(capacity>>6)-1 = 0xffffffff` → маска «все единицы» →
+bucket = index>>6 без ограничения → OOB по `arrayC[]` (obj+16 = kalloc(capacity*4)).
+
+**Проверка `capacity > 63` есть НЕ везде:**
+* `newResourceGroup` (0x9f60a84) — проверяет: `0x9f60fe4 cmp w2,#63; b.hi` +
+  `0x9f61028..34` (степень двойки). Этот путь безопасен.
+* **unchecked-путь** — `0x9f64910` (grow/resize): `0x9f64938 ldr w8,[x0,#32]`,
+  `0x9f64940 mov x21,w8` → `capacity = 2*count`, **без нижней границы**,
+  вызов init @ `0x9f649ac`. `count < 32` ⇒ `capacity < 64` ⇒ `obj+40 = 0xffffffff`.
+
+#### 4. Форма struct'а (0x9f7314c)
+
+```
+0x9f73178: cmp  x3, #88 ; b.lo error    ; structure input >= 88 байт
+0x9f731a8: ldr  w8, [x1] ; tst w8,#0xf  ; первый u32 = команда
+0x9f731b8: cmp  w8, #130               ; команда 130 -> групповой путь
+0x9f731c0: ldr  w1, [x24, #56]         ; поле +56
+0x9f731dc: ldr  w8, [x24, #60]         ; поле +60
+```
+
+#### 5. Что сделано
+
+* `Sources/Legacy/iogpu_oob64.m` — новый PoC `nk_iogpu_oob64_run()`:
+  IOServiceOpen(type 1/2/33) → `IOConnectCallStructMethod(conn, 64, in, 88..256, ...)`,
+  свип команды {130,0x82,0x83,0x8d,0x10,0,1,0x8e,0x8f,0x90} × u32-слотов [4,sz)
+  × capacity {0,1,2,3,7,8,15,16,31,32,33,63,64,128,4096}. Каждый нестандартный
+  kern_return и каждый KERN_SUCCESS логируются. Bounded (4096 вызовов), watchdog-safe.
+* UI: кнопка **«IOGPU sel64»** (ContentView) → `AppState.iogpuOob64()`.
+* Сборка проходит: `packages/srk801_20261019-201645.ipa`.
+
+#### 6. Что это меняет
+
+**Примитив OOB из приложения больше НЕ заперт за W-T3.** Селектор 64 + type 1
+живут в клиенте, который открывается из обычного sandbox-приложения. WebKit-пивот
+нужен только если понадобится GPU-entitlement для чего-то ещё; сам путь до
+`IOGPUGroupMemory::init` из приложения открыт.
+
+Следующие шаги:
+1. Прогнать `nk_iogpu_oob64_run()` на устройстве — найти комбинацию
+   (cmd, offset, capacity), дающую нестандартный kr / KERN_SUCCESS.
+2. Определить, какой u32-слот реально становится capacity (свип уже это делает).
+3. Связать с unchecked-путём `0x9f64910` (grow) — нужен count < 32.
+4. Из OOB — R/W в kernel; дальше data-only root (SPTM для data-only не нужен).
 
 ### 4.4.10 «Свой user client» ЗАКРЫТ СТАТИЧЕСКИ (2026-10-17 10:40)
 
@@ -327,6 +392,13 @@ VA = fileoff + 0xFFFFFFF007004000):
 невозможен по построению.** Эмпирика §4.4.9 (99 открытых сервисов ×
 selector 11 = 0 попаданий) теперь объясняется не «тип не открывается», а
 фактической несвязностью блока.
+
+**ПОПРАВКА 2026-10-19 20:20 (важно, снимает «камень»):** вывод выше верен
+ТОЛЬКО для блока @0x…68b0. Настоящая dispatch-таблица IOGPUFamily — **@0x7e67c58,
+112 селекторов на type 1**, и групповой создатель в ней — **селектор 64**
+(`0x9f541ec`), а не 11. Селектор 64 не был опробован ни разу (эмпирика била
+по sel 11 в неверной таблице). Итог: путь до `IOGPUGroupMemory::init` из
+sandbox открыт, WebKit-пивот для него не требуется. Детали — §4.4.9.
 
 Подтвердающий, НЕ load-bearing (пере-выводимо): словарь символов
 (symbols_all, /tmp/kc262 — утрачен на reboot, пересобирается `nm`-style);
@@ -387,3 +459,290 @@ WebContent; OOB-диспетчеризация там — по результа�
   несовпадении frame_type → баг SPTM-firmware, другая категория.
 
 ---
+
+---
+
+
+
+
+### 4.9 УЯЗВИМОСТИ iOS 26.3 -> ЖИВЫ НА 23C55 (26.2) (2026-10-20 20:15, ПЕРЕПРОВЕРЕНО)
+
+**Источник истины — advisory Apple для iOS 26.3 (Released February 11, 2026).**
+CVE, помеченные как исправленные в 26.3, на 23C55 (26.2) **НЕ пропатчены** — по
+определению. Это достоверное утверждение, оно не зависит от моих догадок о коде.
+
+#### Подтверждённые advisory (iOS 26.3), живые на 26.2
+
+| CVE | Компонент | Impact (цитата Apple) | Автор | Доступ из приложения |
+|---|---|---|---|---|
+| **CVE-2026-20626** | **Kernel** | **A malicious app may be able to GAIN ROOT PRIVILEGES** (improved checks) | Keisuke Hosoda | **да, напрямую** |
+| **CVE-2026-20615** | **CoreServices** | **An app may be able to GAIN ROOT PRIVILEGES** (path handling, improved validation) | **Csaba Fitzl (theevilbit), Gergely Kalman** | да (xattr/файлы) |
+| **CVE-2026-20617** | **CoreServices** | **An app may be able to GAIN ROOT PRIVILEGES** (race condition, improved state handling) | Golden Helm, Kalman, Fitzl | да |
+| **CVE-2026-20667** | **libxpc** | **An app may be able to BREAK OUT OF ITS SANDBOX** (logic issue, improved checks) | anonymous | **да, тривиально (XPC)** |
+| **CVE-2026-20628** | **Sandbox** | **An app may be able to BREAK OUT OF ITS SANDBOX** (additional restrictions) | Noah Gregory (wts.dev) | да |
+| CVE-2026-20654 | Kernel | app -> unexpected termination (improved memory handling) | Jian Lee | да |
+| CVE-2026-20637 | AppleKeyStore | UAF | Johnny Franks | да |
+| CVE-2026-20634 | ImageIO | disclosure of **process** memory | gkarchemsky/ZDI | да |
+| CVE-2026-20609 | CoreMedia | file -> disclose memory contents | Y. Can YILMAZ | да |
+| CVE-2026-20611 | CoreAudio | **out-of-bounds access** | Trend Micro ZDI | да |
+| CVE-2026-20700 | dyld | memory corruption, **0-day, эксплуатируется в дикой природе** | Google TAG | нужен memory write |
+
+**Приоритет для нашей цепочки (app -> kernel RW -> jailbreak):**
+1. **CVE-2026-20667 (libxpc, sandbox escape)** — XPC доступен из любого sandbox-приложения,
+   «logic issue ... improved checks» = отсутствующая проверка. В связке с WebKit-pivot
+   (уже есть renderer RCE, §4.1) это **песочница -> native exec**, без всякого IOGPU.
+2. **CVE-2026-20615 / -20617 (CoreServices -> root)** — theevilbit & Kalman публикуют
+   разбор с PoC. «path handling» + «race condition» — обе дают write-what-where.
+3. **CVE-2026-20626 (Kernel -> root)** — «improved checks» в ядре. Самый ценный,
+   но и самый закрытый (Keisuke Hosoda, без публичного PoC).
+4. **CVE-2026-20611 (CoreAudio, OOB)** — OOB-доступ в CoreAudio из приложения.
+
+#### Проверка по бинарям: что реально изменилось 26.2 -> 26.3
+
+Скачан только kernelcache 26.3 (build 23D127) и извлечены кексты обеих версий.
+Реально изменившиеся (остальное — churn подписи):
+```
+com.apple.kernel                        -32 720   XNU
+com.apple.AGXG14P                       +16 472   GPU
+AppleMobileDispH14P-DCP                 +16 408   display
+AppleM2ScalerCSCDriver                  +16 560
+AppleEmbeddedUSBHost                    +32 912
+AppleGPIOICController                   +16 512
+AppleSEPManager                         +16 392
+IOUSBHostFamily                         +16 440
+```
+
+**Исправленная атрибуция (было неверно):**
+* Строка `"Partial mapping of a memory entry"` **отсутствует в 26.2 и есть в 26.3** — но
+  функция, которая её использует, **идентична в обоих билдах** (последовательность
+  `add #0xb38 / casa / strb #0x154 / ldr #0x450 / casl / cmp #6 / ldrb / tbz` — 26.2 @0x8233fd8,
+  26.3 @0x8239248, совпадает 1:1). Значит строка новая, а **проверка — нет**; вывод
+  «в 26.2 нет проверки» был поспешным. Привязать её к CVE-2026-20626 нельзя.
+* **CVE-2026-20620 (GPU Drivers, OOB read) — в advisory macOS 26.3, а НЕ в iOS.** Моя
+  привязка строк про DP-pipe-лимиты (`Platform limits applied %u overall limited %u`) к
+  CVE-2026-20620 для iOS **необоснована**. Изменение в AppleMobileDispH14P-DCP реальное
+  (+16 КБ, новые строки про `limited %u` / `Apple Display %u pipes %u`), но его CVE в
+  iOS-списке отсутствует => внутренний/нераскрытый фикс.
+
+#### Чего НЕ доказано
+* Эксплуатируемость. Diff доказывает, что **фикс в 26.3 отсутствует в 26.2**, но не
+  что баг эксплуатируем (нужен либо публичный PoC, либо собственная проверка на устройстве).
+* Публичных PoC на эти CVE нет (поиск 2026-10-20). История «Speedyfriend67 потерял PoC»
+  — хайп без артефактов; сам CVE-2026-20654 в advisory Apple **реален** (вопреки статье
+  pbxscience, утверждающей, что такого CVE нет).
+* Конкретный код для CVE-2026-20626 не идентифицирован — Kernel-диф показывает
+  32 КБ изменений без символов, нужна привязка по функциям.
+
+#### Что сделано
+`Sources/Legacy/iogpu_oob64.m` переписан в «method map»: P1 — открыть 8 сервисов x 8 типов
+x 128 селекторов с валидным 256-байтным struct'ом (outCnt = sizeof(out); при outCnt=0
+structureOutput = NULL и хендлер выходит сразу), записать kr по каждому; P2 — карта
+`sel -> {OK,FAIL,BADARG,OTHER}`; P3 — реплей живых селекторов с cmd {0,1,2,3,64,130} x
+capacity {1..4096}.
+
+### 4.8 CVE-2025-24257 в IOGPUFamily 23C55 — ОКОНЧАТЕЛЬНО НЕДОСТИЖИМ ИЗ USER-SPACE (2026-10-20 15:40)
+
+**Итог многоцикловой статики + эмпирики. Прежние два вывода («sel 64 = group creator»,
+«достижимо, нужен только ключ») — оба неверны. Ниже — как получено.**
+
+**1. Настоящая dispatch-таблица** прочитана прямо из кекста, вытащенного из kernelcache
+(`ipsw kernel extract --all`): `__const` @ `0xfffffff007e66888`, таблица @ `0x7e67c58`,
+stride 0x18, 112 записей. Формат — `IOExternalMethodDispatch` (XNU
+`iokit/IOKit/IOUserClient.h`): `+0 fn`, `+8 checkScalarInputCount`,
+`+0xC checkStructureInputSize`, `+0x10 checkScalarOutputCount`, `+0x14 checkStructureOutputSize`.
+
+**2. «sel 64 -> 0x9f541ec» было ложным.** Указателей на `0x9f541ec` нет НИГДЕ: ни abs64,
+ни low32, ни chained `0x8030bcad02f541ec` — ни в кексте, ни в kernelcache. У функции
+`0x9f541ec` нет ни одного `bl`-вызова. BFS по call-графам всех 12 group-capable
+dispatch-обработчиков (idx 6, 8, 25, 45, 52, 53, 62, 64, 81, 101, 108, 109 — те, у кого
+`checkStructureInputSize == 0xffffffff`) **не находит пути** ни к `0x9f541ec` (group
+dispatcher), ни к `0x9f60a84` (newResourceGroup), ни к `0x9f5fb04` (args-путь).
+Цепочка `0x9f541ec -> 0x9f7314c -> 0x9f60a84 -> IOGPUGroupMemory::init` — **мёртвый код**.
+
+**3. Эмпирика с устройства** (`Documents/oob64.log`):
+```
+IOGPU type=1 : 56/128 сел.   IOGPU type=33 : 128/128
+AGX   type=1 : 56/128        AGX   type=33 : 128/128
+```
+112 = 56 + 56: это ДВЕ 56-элементные таблицы подряд (idx 0..55 и 56..111 — разные
+наборы хендлеров, не дубли). Type 1 -> таблица A, type 33 -> A+B.
+
+**4. `IOConnectCallStructMethod` не умеет передавать scalar-входы** — все строки с
+`checkScalarInputCount > 0` отбивались ядром (`kIOReturnBadArgument`) ДО входа в хендлер.
+Отсюда 0 SUCCESS во всех прогонах S3. Правильный вызов — `IOConnectCallMethod`
+(несёт и скаляры, и struct).
+
+**5. CVE-2025-24257 в IOGPUFamily 129.3.2 / 23C55 — недостижим.** Паттерн
+`capacity>>6 - 1` (`0x9f612a4`) есть только в IOGPUFamily; в AGXG14P (отдельный кекст,
+свой `IOGPUNewResourceArgs`) — **отсутствует**. Нужен другой путь создания ресурсов.
+
+**Следствие для цепочки.** Путь `webkit pivot -> IOGPU OOB 24257 -> kernel RW` в этой
+прошивке **не существует в виде user-space-exploitable**. Варианты:
+  (а) искать OOB в ДРУГИХ kext'ах (AppleAVE2 / IOMobileGraphicsFamily-DCP — в лаборатории
+      уже есть их бинари);
+  (б) искать OOB в IOGPUFamily, НЕ связанный с group-memory (другие 56 обработчиков);
+  (в) вернуться к B12 (kernel R/W через UAF-канал, нужен write) или к WebKit-ветке.
+
+### 4.7 IOGPU 23C55 — метод-таблица разобрана, прежний «sel 64» ОКАЗАЛСЯ НЕВЕРНЫМ (2026-10-20 15:05)
+
+**Эмпирика с устройства** (`Documents/oob64.log`, 14:57):
+```
+IOGPU type=1  : 56/128 селекторов существуют   (таблица A: idx 0..55)
+IOGPU type=33 : 128/128                      (A + B)
+AGX   type=1  : 56/128   AGX type=33 : 128/128
+sel 8 на type=1 -> KERN_SUCCESS, outN=512
+```
+
+**Исправление прежнего вывода.** «Групповой создатель = sel 64 -> 0x9f541ec» было взято из
+blocks-скана, а не из IOKit-таблицы. Проверено тремя способами: значения `0x9f541ec`
+нет ни как abs64, ни как low32, ни как chained `0x8030bcad02f541ec` **нигде в кексте**.
+Функция `0x9f541ec` не имеет ни одного `bl`-вызова — это внутренний обработчик,
+достижимый только через per-row handler table.
+
+**Реальная структура.** Таблица `0xfffffff007e67c58` (n=112) — это **две 56-элементные
+таблицы подряд**: idx 0..55 = таблица A, idx 56..111 = таблица B (тот же fn-список со
+сдвигом 56). Type 1 отдаёт A, type 33 отдаёт A+B.
+
+**Формат записи** `{chained fn, q1, q2}`: **q1 = число scalar-входов, q2 = размер
+structure-входа**. Пример: idx 42 `q1=2 q2=2` · idx 49 `q1=1 q2=0` · idx 54 `q1=2 q2=1`.
+`q1/q2 = 0xffffffff` => «без аргументов».
+
+**Групповой путь внутри кекста** (не через user-client селектор):
+```
+0x9f5415c  external method: w20 = scalarInput[0] -> 0x9f51970 -> 0x9f518a8 (поиск по индексу)
+0x9f541ec  dispatcher: structSize>=88; outSize>=inScalar+88; struct[0]=cmd; cmd==130;
+           key=struct[56] -> lookup в target->[240]; struct[60]>=validator
+0x9f734b4  capacity = struct[60]
+0x9f60fe4  newResourceGroup: capacity > 63 (проверка ЕСТЬ)
+0x9f64910  grow: capacity = 2*count, нижней границы НЕТ  <- CVE
+0x9f612a4  init: obj+40 = (capacity>>6)-1 ; capacity<64 => 0xffffffff
+```
+
+**Что сделано.** `Sources/Legacy/iogpu_oob64.m` переписан: таблица q1/q2 генерируется
+из `hunt/dispatch_23c55.json` (без ручного переноса), S3 драйвит каждый существующий
+селектор **с правильной арностью** (q1 scalars + q2-байтная структура) и ищет
+KERN_SUCCESS/новый код возврата. Следующий шаг: найти селектор с q2>=0x58 (88) —
+только такие дотягиваются до группового пути с capacity<64.
+
+### 4.6 Логи в Documents (2026-10-20 14:40)
+
+Добавлен устойчивый лог-канал рядом с `trace.log`:
+
+| Файл | Что | Механизм |
+|---|---|---|
+| `Documents/srk801.log` | вся сессия (каждая строка `nk_log`) | `write(2)`+`fsync(2)` на строку |
+| `Documents/oob64.log` | прогон IOGPU sel-64 | то же, плюс заголовок сессии |
+| `Documents/trace.log` | WebKit/bridge события (было) | не тронут |
+
+Хелпер: `Sources/Core/nk_trace.c` -> `nk_doc_log_open/nk_doc_log/nk_doc_log_close_all()`
+(декл. в `nk_trace.h`). Lazy-open: первые строки не теряются, если `nk_log` сработал
+до явного `nk_doc_log_open`. `nk_run()` открывает `srk801.log` на старте; probe
+`iogpu_oob64` открывает `oob64.log` (макрос `ol()` дублирует в оба).
+
+Зачем: паника ядра / fly-away убивают процесс — на диске остаётся ровно тот файл,
+который закончился на killer-строке. Это единственное доказательство, переживающее
+reboot.
+
+### 4.5 SPTM 23C55 — оффлайн-разбор бинаря + кандидаты на race (2026-10-19 19:30)
+
+Полный разбор: **Docs/sptm_23c55.md**. Артефакты: `Artifacts/sptm/` (sptm.macho, DeviceTree),
+`Tools/{macho,sptm,refmap,findfn}.py`, `/home/abzal/ios262_lab/spmt/extract_sptm.sh`.
+
+**Факт #1 (разблокировка).** На A15 SPTM лежит отдельным файлом в IPSW —
+`Firmware/sptm.t8110.release.im4p`, 172 KB, **без шифрования** (LZFSE → Mach-O arm64e
+1 064 992 B, UUID eaa5b2d2-6ced-302b-82f8-f8bf7b6af443). `sep-firmware.d17` при этом
+зашифрован (production keybag, device key) — его не распаковать без девайса. Итог: SPTM
+23C55 разобран офлайн, впервые.
+
+**Карта SPTM (адреса в образе).** `sptm_map_page` 0x270d300c · `sptm_retype` 0x270d28dc ·
+`sptm_map_table` 0x270d4550 · `sptm_unmap_table` 0x270d4fd0 · `sptm_update_region` 0x270d7350 ·
+`sptm_update_disjoint` 0x270d7afc · `sptm_guest_dispatch` 0x270db1ec ·
+`frame_acquire` 0x270c8b50 · `frame_release` 0x270c8d20 ·
+`sptm_iofilter_protected_write` 0x270bebe8. FTE: +0 lock(casah) / +2 type(u8) /
++3 flags / +4 in_flight_ops(u16) / +6 mapping_refcnt(u16) / +8 nested_refcnt(u16).
+Матрица типов — таблица 0x2701d720, stride 0x60, 64 типа (perm16, trans20, ctx30, fn+0x50).
+
+**S1 (главный кандидат) — stale SPTM frame type.** `pmap_recycle_page`
+(osfmk/arm64/sptm/pmap/pmap_data.c:2397) = 3 НЕАТОМАРНЫХ SPTM-вызова:
+`pmap_is_page_free()` → `sptm_get_frame_type()` → `sptm_retype(..., XNU_DEFAULT)`,
+причём **возврат sptm_retype игнорируется**. SPTM отклоняет retype, если заявленный текущий
+тип не совпадает с фактическим (0x270d29bc `cmp w8,w23` → violation) ⇒ при гонке с
+конкурентным retype кадр уходит в VM free-list с типом ≠ XNU_DEFAULT. Проверки типа при
+free — только assert (release no-op): vm_resident.c:5646, pmap_data.c:575 (SPTM TODO).
+Тип «липкий»: `pmap_type_requires_retype_on_recycle()` (pmap_data.h:2196) сбрасывает только
+USER_EXEC/USER_DEBUG/USER_JIT/ROZONE/KERNEL_RESTRICTED. Второй вход — окно
+retype→map_page в `pmap_enter_pte()` (pmap.c:6152-6180), где сам код признаёт, что
+`pmap_remove()` снимает маппинг БЕЗ PVH-lock (pmap.c:6134-6138).
+
+**S3 — граница in-flight/карантин.** `sptm_paddr_is_inflight()` (sptm.h:60) +
+`pmap_paddr_inflight_barrier()` (pmap_data.c:2263) — это запрос, потом отдельный запрос
+`pmap_is_page_free()`, потом free; атомарности нет. Ядро само признаёт, что батчевые
+multipage-операции делают SPTM-вызовы **без PVH/pmap-лока** (pmap.c:4033-4039). Обход
+карантина SPTM (то, что в pmap_tte_remove названо блокирующей эксплуатацию фичей) —
+отдельная задача, искать надо в SPTM-бинаре.
+
+**ЗАКРЫТО (проверено, с док-вами).**
+- CVE-2025-43520 (DarkSword, TOCTOU в VFS cluster_write_contig) — **уже пропатчено**:
+  vfs_cluster.c:3700 и :6105 в 61.12 уже содержат `if (!(upl_flags & UPL_PHYS_CONTIG))`;
+  61.12 < 62.10 ⇒ есть в 23C55. Блоги/Feedly противоречат друг другу — источник правды
+  исходник, а не пресс-релиз.
+- uint16-overflow refcnt → dangling PTE (pmap_tte_remove) — **на SPTM-сборках не проходит**:
+  SPTM режет число маппингов на кадр до 2048 (0x270d477c `cmp w9,#0x801` → violation/panic).
+  Переполнения не будет, будет DoS.
+- Внутри SPTM check-then-act окна нет: тип читается и PTE ставится CAS-ом под
+  exclusive-guard кадра (0x270d30c0 frame_acquire → 0x270d3330 `casl`).
+
+**Дальше:** (1) дописать матрицу «тип → права → kernel-контексты» и понять, какой залипший
+тип опасен; (2) найти смену типа без PVH-lock; (3) ловить SPTM-violation в device-log
+(`VIOLATION_ILLEGAL_RETYPE`, `VIOLATION_FRAME_HELD_EXCLUSIVE`, `VIOLATION_FRAME_OWNER`);
+(4) искать обход карантина в SPTM-бинаре; (5) параллельно — `sptm_update_disjoint` читает
+op-массив по ФИЗИЧЕСКОМУ адресу per-CPU буфера ядра ⇒ если до него можно дотянуться из
+user (линия T3) — это отдельный канал.
+
+---
+
+## 5.0 СВОДКА: ВЫБРАННЫЙ ПУТЬ К KERNEL R/W (2026-10-20 20:40)
+
+Полный реестр уязвимостей с оговорками — в **`VULNS.txt`** (в корне репо).
+
+**Выбранный путь: AIO kevent UAF (трек B, «B12»).** Единственный, где в репо уже
+есть **подтверждённый на устройстве** примитив, и он не требует нового CVE.
+
+```
+aio_read(SIGEV_KEVENT)  -> aio_workq_entry в aio_workq_zonep + knote на kqueue
+aio_read(SIGEV_NONE)    -> донор: его запись free + LIFO-claim в тот же слот
+dangling knote          -> filt_aioprocess() идёт по ОСВОБОЖДЁННОЙ записи:
+                             kev.ext[0] = errorval  (+0x28)   [R] подтверждено
+                             kev.ext[1] = returnval (+0x20)   [R] подтверждено
+                             kev.ident  = uaiocbp    (+0x48)
+                             kev.udata  = sival_ptr  (+0x50)
+```
+
+**Запись — тот же примитив**, потому что все три опасных действия читают свои
+операнды ИЗ САМОЙ записи:
+
+| в filt_aioprocess | читает | даёт |
+|---|---|---|
+| `TAILQ_REMOVE(entry)` | +0x10 prev, +0x18 next | **write-what-where** (`*prev = next`) |
+| `aio_entry_unref(entry)` | +0x2C refcount | **double free** → отравление freelist |
+| `aio_proc_lock(*(entry+0x40))` | +0x40 procp | procp=0 ⇒ **PANIC FAR=0x58** (наблюдаемый ребут) |
+
+Сейчас слот обнулён на free ⇒ писать некуда ⇒ «запись мертва». **Не хватает
+одного: спрея в зону `aio_workq_zonep`** (224 B / 0xE0), чтобы свободный слот
+переиспользовался НАШИМ содержимым. Тогда: TAILQ_REMOVE пишет по нашим адресам,
+unref даёт double free, procp из нашего объекта убирает панику.
+
+`Sources/Legacy/nk_spray.m` — портовый спрей (E1), зону aio не трогает ⇒ нужен
+свой zone-спрей. Остальное (read-канал, карта объекта, root-эскалация) в дереве.
+
+**Что изменилось в оценке линий:**
+* **CVE-2025-24257 (IOGPU) — ЗАКРЫТ на 26.2.** Фикс 18.4 присутствует в 23C55
+  (`cmp w2,#0x3f` @ `0x9f60fcc`): capacity<64 ⇒ kIOReturnNoResources. Прежний
+  «тупик» был ВЕРЕН, но объяснялся неверно (искали sel 11/64 в неверной таблице;
+  реальная таблица IOGPUFamily = `0x7e67c58` = ДВЕ 56-элементные, sel 64 есть
+  только на type 33, а группа создаётся **sel 8 на type 1**).
+* **Найдены живые CVE 26.3** (приложения → root / sandbox escape / OOB) — фикс в
+  26.3 ⇒ на 23C55 не пропатчены. Приоритет: libxpc-20667 (sandbox escape),
+  CoreServices-20615/-20617 (root, theevilbit+Kalman), Kernel-20626 (root).
+* **CVE-2026-20620 (GPU Drivers) — macOS-only**, в iOS-списке его нет.
+

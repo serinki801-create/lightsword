@@ -2,6 +2,7 @@
 #include "exploit.h"
 #include "nk_home.h"
 #include "nk_state_machine.h"
+#include "nk_trace.h"
 
 void nk_async_main(void (^block)(void));
 void nk_async_background(void (^block)(void));
@@ -25,3 +26,5 @@ void nk_iokit_fuzz(void);
 
 
 void nk_iogpu_oob_run(void);
+void nk_iogpu_oob64_run(void);
+int  nk_aio_uaf_run(int attempts);

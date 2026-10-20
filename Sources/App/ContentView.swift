@@ -55,6 +55,20 @@ struct ContentView: View {
                     }
                     .disabled(state.running)
 
+                    Button {
+                        state.iogpuOob64()
+                    } label: {
+                        Label(state.t("IOGPU sel64", "IOGPU sel64"), systemImage: "target")
+                    }
+                    .disabled(state.running)
+
+                    Button {
+                        state.aioUaf()
+                    } label: {
+                        Label(state.t("AIO UAF", "AIO UAF"), systemImage: "bolt.trianglebadge.exclamationmark")
+                    }
+                    .disabled(state.running)
+
                     NavigationLink {
                         WebKitStageView()
                     } label: {

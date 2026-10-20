@@ -46,4 +46,7 @@ typedef struct {
  * Возврат: 0 если hits > 0, -1 иначе. stat_out: opt. */
 int nk_aio_uaf_b12(int attempts, nk_aio_stat_t *stat_out);
 
+/* Standalone runner for the UI button: durable log + machine-readable summary. */
+int nk_aio_uaf_run(int attempts);
+
 #endif

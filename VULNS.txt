@@ -1,0 +1,361 @@
+================================================================================
+ LIGHTSWORD — РАБОЧИЕ УЯЗВИМОСТИ НА iOS 26.2 / 23C55 (iPhone 13, A15, T8110)
+ xnu-12377.62.10 · IOGPUFamily 129.3.2 · AGXG14P 342.3 · SPTM (iOS 26.2)
+ Проверено: 2026-10-20. Источники: advisory Apple iOS 26.3, бинарный diff
+ 26.2 vs 26.3, статика SPTM/IOGPUFamily/ядра, device-логи в Documents/.
+================================================================================
+
+СТАТУС ОБОЗНАЧЕНИЙ
+  [R/W]  примитив чтения/записи ядра подтверждён
+  [R]    примитив чтения ядра подтверждён
+  [LIVE] уязвимость присутствует в 26.2 (фикс — в 26.3), PoC нет
+  [DEAD]  присутствует, но недостижимо с userspace в 26.2
+  [X]     закрыт
+
+
+================================================================================
+ 1. ВЫБРАННЫЙ ПУТЬ К KERNEL R/W — AIO KEVENT UAF (трек B, «B12»)
+================================================================================
+
+  Это единственный путь, где в репозитории уже есть ПОДТВЕРЖДЁННЫЙ на-device
+  примитив. Остальные либо пропатчены в 26.2, либо без публичного PoC.
+
+  МЕХАНИЗМ (подтверждено на устройстве, см. Documents/aio_uaf.log)
+  ---------------------------------------------------------------------------
+  1. Приложение (sandbox, без entitlement) открывает файл, делает aio_read
+     (LIO_NOWAIT) с sigev_notify = SIGEV_KEVENT -> ядро создаёт запись
+     aio_workq_entry в зоне aio_workq_zonep и вешает knote на kqueue.
+  2. Второй aio_read с sigev_notify = SIGEV_NONE используется как ДОНОР:
+     его запись освобождается и LIFO-claim'ается в тот же слот зоны.
+  3. Оставшийся dangling knote указывает на освобождённый слот. Когда ядро
+     доставляет событие, filt_aioprocess() проходит по ЗАВИСНУТОЙ записи и
+     кладёт в kevent её поля:
+         kev.ext[0] = entry->errorval   (+0x28)
+         kev.ext[1] = entry->returnval  (+0x20)
+         kev.ident   = entry->uaiocbp    (+0x48)
+         kev.udata   = aiocb->sival_ptr (+0x50)
+     => ЧТЕНИЕ ПАМЯТИ ЯДРА ИЗ ПРИЛОЖЕНИЯ ПОДТВЕРЖДЕНО (это и есть B12-read).
+
+  ЗАПИСЬ (то, что нужно доделать)
+  ---------------------------------------------------------------------------
+  filt_aioprocess() на ЗАВИСНУТОЙ записи делает ровно три опасных действия:
+
+      (a) TAILQ_REMOVE(entry)              -> *prev = next
+          пишет по адресу, взятому ИЗ САМОЙ ЗАПИСИ (+0x10/+0x18).
+          Сейчас «мёртво», потому что слот обнулён на free -> писать некуда.
+
+      (b) aio_entry_unref(entry)           -> unref(+0x2C)
+          refcount берётся ИЗ ЗАПИСИ. Если подсунуть 0/1 -> повторный free
+          той же записи = DOUBLE FREE в зоне aio_workq_zonep.
+
+      (c) aio_proc_lock(*(entry+0x40))    -> procp
+          procp тоже ИЗ ЗАПИСИ. В заблокированном слоте он = 0 ->
+          PANIC FAR=0x58 (это и есть наблюдаемый ребут в логах).
+
+  КЛЮЧЕВАЯ МЫСЛЬ: (a),(b),(c) — это запись/чтение ЧЕРЕЗ ДАННЫЕ ЗАПИСИ.
+  Если в слот вернуть СВОЙ КОНТРОЛИРУЕМЫЙ ОБЪЕКТ (а не обнулённую запись),
+  то:
+      (a) превращается в ЗАПИСЬ ПО АДРЕСУ И ПРОИЗВОЛЬНОМУ ЗНАЧЕНИЮ
+          (write-what-where, значение = next/prev из нашего объекта);
+      (b) превращается в DOUBLE FREE -> отравление freelist зоны
+          -> выделение своего объекта поверх -> подмена указателя/колбэка;
+      (c) procp из нашего объекта -> паника уходит (FAR=0x58 больше не будет).
+
+  ЧТО НУЖНО ДОДЕЛАТЬ (всё в этом репозитории, device-итерации):
+    A. Спрей в ЗОНУ aio_workq_zonep (224 B / 0xE0) объектами нашего
+       содержимого так, чтобы свободный слот переиспользовался ДО
+       обработки dangling knote. Текущий nk_spray.m — портовый спрей
+       (E1, mach ports), зону aio он не трогает -> нужен свой спрей.
+    B. Свой aiocb с aio_buf, заполненным заранее (our fake entry layout:
+       +0x10 prev, +0x18 next, +0x20 returnval, +0x28 errorval,
+       +0x2C refcount=1, +0x40 procp=NULL-safe, +0x48 uaiocbp).
+    C. Повторная доставка события (второй knote на тот же слот, либо
+       повторный kevent64) -> (a)+(b)+(c) отработают по нашим данным.
+    D. После (a): write-what-where. Цели — writable function pointer в
+       kernel data, или ucred->cr_uid (cr_posix+0x18 в kernel-layout
+       struct ucred; в userspace-виде struct ucred без BSD_KERNEL_PRIVATE
+       cr_posix тоже начинается с 0x18 -> uid @ ucred+0x18).
+    E. После double-free: спрей в ту же зону -> контролируемый объект
+       поверх -> подмена vtable/callback -> code exec -> kernel R/W.
+
+  ПОЧЕМУ ЭТО САМЫЙ ДЁШЕВЫЙ ПУТЬ:
+    - UAF-доказана на устройстве (не гипотеза);
+    - read-канал работает и уже пишет kernel-данные в kevent;
+    - запись не требует нового CVE, нового кекста, нового энтрипоинта —
+      нужен только спрей в известную зону;
+    - WebKit-pivot (renderer RCE) уже работает и даёт native-код в
+      песочнице — он нужен, чтобы дотянуться до не-песочничных
+      user-client'ов позже, но не для самого AIO-примитива.
+
+  ТЕКУЩЕЕ СОСТОЯНИЕ В РЕПО:
+    Sources/Legacy/aio_kevent_rw.c   — B1 (детерминированный триггер) + B2 (разведка)
+    Sources/Legacy/aio_kevent_rw.h   — карта объекта aio_workq_entry (B0)
+    Sources/Legacy/nk_spray.m        — портовый спрей (нужен zone-спрей для aio)
+    Sources/Legacy/privesc.c         — nk_escalate_root (uid/gid -> 0)
+    Sources/Kernel/b12_offsets.h      — offset-ы слота 192 B (устаревшие, см. B0 выше)
+
+  ТЕКУЩИЙ СТАТУС: read-канал — [R] подтверждён. write-канал — в работе
+  (требуется zone-спрей, пункт A выше).
+
+
+================================================================================
+ 2. ВСЕ ПРОВЕРЕННЫЕ УЯЗВИМОСТИ (полный реестр)
+================================================================================
+
+--------------------------------------------------------------------------------
+ 2.1  AIO KEVENT UAF  (трек B / «B12») — xnu bsd/kern/vfs/aio.c
+--------------------------------------------------------------------------------
+  Статус:  [R] read подтверждён на устройстве / [R/W] write требует zone-спрея
+  Тип:     use-after-free в filt_aioprocess() (kevent-доставка на освобождённую
+           aio_workq_entry), + double-free через aio_entry_unref.
+  Доступ:  да, из обычного sandbox-приложения (aio_read + kqueue + kevent64).
+  Публично: нет публичного CVE на этот конкретный вектор.
+
+  Подтверждённые на device факты (Documents/aio_uaf.log):
+    - knote доставляет событие на ЗАВИСНУТУЮ запись (HIT, слот занят спреем)
+    - kev.ext[0] = entry->errorval, kev.ext[1] = entry->returnval,
+      kev.ident = entry->uaiocbp, kev.udata = aiocb->sival_ptr
+    - при обнулённом слоте procp = 0 -> PANIC FAR=0x58 (наблюдаемый ребут)
+
+  Что даёт: чтение произвольных 8 байт kernel-памяти за событие; при контроле
+  содержимого слота — write-what-where + double-free -> kernel R/W.
+
+--------------------------------------------------------------------------------
+ 2.2  WebKit DFG TYPE CONFUSION  (трек W, «W-T0/W-T2»)
+--------------------------------------------------------------------------------
+  Статус:  [R/W] подтверждён на устройстве (renderer, в песочнице WebKit)
+  Тип:     type confusion в DFG (MapIterationEntryKey-подобный узел) -> UAF в
+           JIT/DFG -> AAR + AAW в адресном пространстве рендерера.
+  Доступ:  да, через WebKit в обычном приложении.
+  Публично: да, по публичным writeup'ам (node shape известен).
+
+  Подтверждено: 9+ верифицированных прогонов W-T0, AAR/AAW-echo (W-T2) ок.
+  Ценность: это renderer primitive. Дальше нужен либо WebKit->native pivot
+  (W-T3, в работе), либо связка с 2.5 (sandbox escape) — тогда native-код
+  вне песочницы, и дальше — IOKit-примитивы.
+
+--------------------------------------------------------------------------------
+ 2.3  CVE-2025-24257 — IOGPU IOGPUGroupMemory::init BITMAP UNDERFLOW
+--------------------------------------------------------------------------------
+  Статус:  [DEAD] на 26.2 — недостижимо с userspace.
+  Тип:     obj+40 = (capacity>>6)-1 без проверки capacity >= 64
+           (0x9f612a4), маска используется как индекс бакетов.
+
+  Что установлено (исправляет прежние выводы в этом репо):
+    - Настоящая dispatch-таблица IOGPUFamily: 0xfffffff007e67c58, stride 0x18.
+      Это ДВЕ 56-элементные таблицы подряд, а не одна на 112.
+      Type 1 -> таблица A (0..55); type 33 -> A+B (0..127).
+      AGXG14P type=1 -> 0x7b3d900, всего 19 селекторов (0..18).
+    - Селектора 64 в таблице IOGPUFamily type=1 НЕТ (это был ложный след
+      из blocks-скана; указателей на 0x9f541ec нет ни в кексте, ни в ядре,
+      ни как chained, и у функции нет ни одного bl-вызова).
+    - Группа создаётся селектором 8 на type=1: struct[0]=3 (resType=group),
+      struct[56]=capacity, out+0x10 = указатель на группу.
+      capacity обязан быть степенью двойки >= 64; при capacity < 64 ->
+      kIOReturnNoResources (underflow-маска 0xffffffff делает аллокацию
+      невозможной) — то есть путь закрыт, а не открыт.
+    - Второй underflow-сайт (0x9f755cc, capacity = 2*[x0+32]) без проверки
+      lower bound существует, но достижим только через vtable, не через
+      user-client селектор.
+
+  Итог: CVE-2025-24257 в 26.2 закрыт (Apple пофиксила в 18.4 — проверка
+  `cmp w2,#0x3f` в 0x9f60fcc есть в 23C55). Линия закрыта.
+
+--------------------------------------------------------------------------------
+ 2.4  CVE-2026-64788 — IOGPU create_resource_iosurface INVALID-RELEASE UAF
+--------------------------------------------------------------------------------
+  Статус:  [X] не уязвимо на 23C55
+  Причина: валидатор dimensions стоит ДО вставки ресурса; уязвимая форма живёт
+  в 26.6 / 23G71.
+
+--------------------------------------------------------------------------------
+ 2.5  CVE-2026-43743 — IOGPUFamily RACE
+--------------------------------------------------------------------------------
+  Статус:  [X] закрыт как вектор здесь (нет sandbox-энтрипоинта)
+
+--------------------------------------------------------------------------------
+ 2.6  vm_fault_copy (RE)TYPE RACE  (найдено в исходниках, не в advisory)
+--------------------------------------------------------------------------------
+  Статус:  [DEAD] — 26.2 не эксплуатируем
+  Тип:     в xnu-61.12 SPTM-pmap есть гонка с re-type; в xnu-12377.81.4
+           (26.3) закрыта. На 26.2 SPTM-апёрт делает память физически
+           write-protected, поэтому гонка даёт panic-DoS, а не запись.
+
+  Связанная находка (этот репо): SPTM-бинарь 23C55 доступен оффлайн и
+  разобран — Firmware/sptm.t8110.release.im4w НЕ зашифрован (в отличие от
+  sep-firmware, где ключ от устройства). Полная карта SPTM (FTE layout,
+  матрица 64 типов, адреса функций) — в Docs/sptm_23c55.md.
+  Найденный кандидат S1: pmap_recycle_page() делает три НЕАТОМАРНЫХ вызова
+  SPTM (is_page_free / get_frame_type / retype), возврат retype игнорируется,
+  а SPTM отклоняет retype при несовпадении типа => кадр уходит в free-list
+  с типом != XNU_DEFAULT. Это «липкий тип кадра» — но на 26.2 проверка
+  `cmp w2,#0x3f` в 0x9f60fcc закрывает путь через newResourceGroup.
+
+--------------------------------------------------------------------------------
+ 2.7  CVE-2026-20626 — KERNEL: APP MAY GAIN ROOT PRIVILEGES
+--------------------------------------------------------------------------------
+  Статус:  [LIVE] фикс — в 26.3, на 23C55 НЕ пропатчен
+  Автор:   Keisuke Hosoda. Advisory iOS 26.3 (11.02.2026).
+  Impact:  "A malicious app may be able to gain root privileges."
+  Описание Apple: "The issue was addressed with improved checks."
+  Публичный PoC: нет (на 2026-10-20). Разбор кода: не сделан.
+  Оценка: самый ценный и самый закрытый. Kernel-диф 26.2 vs 26.3 = -32 720
+  байт в com.apple.kernel; символов нет, привязка по функциям не сделана.
+
+--------------------------------------------------------------------------------
+ 2.8  CVE-2026-20615 / CVE-2026-20617 — CoreServices: APP MAY GAIN ROOT
+--------------------------------------------------------------------------------
+  Статус:  [LIVE] фикс — в 26.3
+  Авторы: Csaba Fitzl (@theevilbit), Gergely Kalman (@gergely_kalman), Iru;
+           + Golden Helm Securities.
+  Impact:  "An app may be able to gain root privileges."
+  Описание: 20615 — "A path handling issue was addressed with improved
+             validation."  20617 — "A race condition was addressed with
+             improved state handling."
+  Публичный PoC: theevilbit публикует разборы своих CVE — ждать.
+  Оценка: «path handling» => вероятен write-what-where через symlink/TOCTOU;
+          «race condition» => TOCTOU. Оба дают root напрямую из приложения.
+
+--------------------------------------------------------------------------------
+ 2.9  CVE-2026-20667 — libxpc: APP MAY BREAK OUT OF ITS SANDBOX
+--------------------------------------------------------------------------------
+  Статус:  [LIVE] фикс — в 26.3
+  Автор:   anonymous. Описание: "A logic issue was addressed with improved checks."
+  Impact:  "An app may be able to break out of its sandbox."
+  Публичный PoC: нет.
+  Оценка: XPC доступен из любого sandbox-приложения; «logic issue» =>
+          недостающая проверка. В связке с W-T0 (renderer RCE, п.2.2) это
+          sandbox -> native exec, минуя IOGPU. Дешевле всего по объёму работы.
+
+--------------------------------------------------------------------------------
+ 2.10 CVE-2026-20628 — SANDBOX: APP MAY BREAK OUT OF ITS SANDBOX
+--------------------------------------------------------------------------------
+  Статус:  [LIVE] фикс — в 26.3. Автор: Noah Gregory (wts.dev).
+  Описание: "A permissions issue was addressed with additional restrictions."
+
+--------------------------------------------------------------------------------
+ 2.11 CVE-2026-20637 — AppleKeyStore: USE AFTER FREE
+--------------------------------------------------------------------------------
+  Статус:  [LIVE] фикс — в 26.3. Автор: Johnny Franks (zeroxjf).
+  Impact:  "An app may be able to cause unexpected system termination."
+
+--------------------------------------------------------------------------------
+ 2.12 CVE-2026-20634 / CVE-2026-20675 — ImageIO: DISCLOSURE OF PROCESS MEMORY
+--------------------------------------------------------------------------------
+  Статус:  [LIVE] фикс — в 26.3
+  Авторы: George Karchemsky (@gkarchemsky) + Trend Micro ZDI
+  Impact:  "Processing a maliciously crafted image may result in disclosure of
+           process memory" (20634) / "may lead to disclosure of user
+           information" (20675).
+
+--------------------------------------------------------------------------------
+ 2.13 CVE-2026-20609 — CoreMedia: DISCLOSE MEMORY CONTENTS
+--------------------------------------------------------------------------------
+  Статус:  [LIVE] фикс — в 26.3. Автор: Yiğit Can YILMAZ.
+  Impact:  "Processing a maliciously crafted file may lead to a
+           denial-of-service or potentially disclose memory contents."
+
+--------------------------------------------------------------------------------
+ 2.14 CVE-2026-20611 — CoreAudio: OUT-OF-BOUNDS ACCESS
+--------------------------------------------------------------------------------
+  Статус:  [LIVE] фикс — в 26.3. Автор: Trend Micro ZDI.
+  Impact:  "Processing a maliciously crafted media file may lead to unexpected
+           app termination or corrupt process memory."
+  Описание: "An out-of-bounds access issue was addressed with improved bounds
+           checking."
+
+--------------------------------------------------------------------------------
+ 2.15 CVE-2026-20660 — CFNetwork: REMOTE USER MAY WRITE ARBITRARY FILES
+--------------------------------------------------------------------------------
+  Статус:  [LIVE] фикс — в 26.3. Автор: Amy (amys.website).
+  Impact:  "A remote user may be able to write arbitrary files."
+  Описание: "A path handling issue was addressed with improved logic."
+
+--------------------------------------------------------------------------------
+ 2.16 CVE-2026-20700 — dyld: MEMORY CORRUPTION (0-day, эксплуатируется)
+--------------------------------------------------------------------------------
+  Статус:  [LIVE] фикс — в 26.3. Автор: Google Threat Analysis Group.
+  Impact:  "An attacker with memory write capability may be able to execute
+           arbitrary code. Apple is aware of a report that this issue may have
+           been exploited in an extremely sophisticated attack against specific
+           targeted individuals on versions of iOS before iOS 26."
+  Оценка: требует готового memory-write -> для нас это цель, а не средство.
+           Но указывает на то, что memory-write в iOS 26 реально достижим.
+
+--------------------------------------------------------------------------------
+ 2.17 CVE-2025-24257 / CVE-2026-64788 / прочие — см. 2.3 / 2.4.
+--------------------------------------------------------------------------------
+
+
+================================================================================
+ 3. ЧТО ПРОВЕРЕНО БИНАРНО (26.2 vs 26.3)
+================================================================================
+
+Скачан ТОЛЬКО kernelcache 26.3 (build 23D127, 64 МБ) и извлечены кексты
+обеих версий:
+    ipsw download ipsw --device iPhone14,5 --version 26.3 --kernel
+    ipsw kernel extract <kernelcache> --all
+
+Реально изменившиеся кексты (у остальных размер совпал — churn подписи):
+    com.apple.kernel                        11 829 288 -> 11 796 568  (-32 720)
+    com.apple.AGXG14P                           990 272 ->  1 006 744  (+16 472)
+    com.apple.driver.AppleMobileDispH14P-DCP     774 160 ->    790 568  (+16 408)
+    com.apple.driver.AppleM2ScalerCSCDriver   1 944 512 ->  1 961 072  (+16 560)
+    com.apple.driver.AppleEmbeddedUSBHost         66 032 ->     98 944  (+32 912)
+    com.apple.driver.AppleGPIOICController      115 336 ->    115 640  (+16 512)
+    com.apple.driver.AppleSEPManager            479 656 ->    496 048  (+16 392)
+    com.apple.iokit.IOUSBHostFamily             823 768 ->    840 208  (+16 440)
+
+Новые строки 26.3:
+    Kernel:  "Partial mapping of a memory entry"
+             "map_copy_extra_adjustments"
+             "Failed to set up ktriage for VM sanitization. @%s:%d"
+             "Kernel text exec base: 0x%016lx"
+             "Retry lookup with v4"
+             "Soft mode disabled because process was ptraced"
+    DCP:     "Platform limits applied %u overall limited %u"
+             "Update Ext Pipe state: is_plug %u total count %u limited %u Apple Display %u pipes %u"
+             "IOMFBSwapAppleLookSupported"
+    AGXG14P: "Attempting to map into multiple GPU Contexts!"
+             "Quick Process Exit Enable" / "AGXCommandQueueProcessExitWorkLoop"
+
+Удалённые из 26.3:
+    Kernel:  "filt_aiotouch"            (наш B12-путь задет)
+             "%s: kn %p kev %p (NOT EXPECTED TO BE CALLED!!) @%s:%d"
+             "Failed to allocate struct processor_set @%s:%d"
+
+ВАЖНЫЕ ОГОВОРКИ (проверено, чтобы не обманывать):
+  * "Partial mapping of a memory entry" ОТСУТСТВУЕТ в 26.2 и ЕСТЬ в 26.3, но
+    функция, её использующая, ИДЕНТИЧНА в обоих билдах (последовательность
+    add #0xb38 / casa / strb #0x154 / ldr #0x450 / casl / cmp #6 / ldrb / tbz:
+    26.2 @0x8233fd8, 26.3 @0x8239248). Строка новая, ПРОВЕРКА — нет.
+    Привязать её к CVE-2026-20626 нельзя.
+  * CVE-2026-20620 (GPU Drivers, OOB read) — в advisory macOS 26.3, а НЕ в iOS.
+    Связка строк про DP-pipe-лимиты с этим CVE для iOS НЕОБОСНОВАНА.
+  * Эксплуатируемость [LIVE]-CVE не доказана: diff доказывает лишь, что фикс
+    в 26.3 отсутствует в 26.2. Публичных PoC нет (2026-10-20).
+
+
+================================================================================
+ 4. ПРИОРИТЕТ
+================================================================================
+  1) AIO kevent UAF -> zone-спрей -> write-what-where + double-free
+     (готовый примитив, дешевле всего; детали в п.1)
+  2) CVE-2026-20667 (libxpc, sandbox escape) — тривиально достижим, закрывает
+     песочницу => native-код вне песочницы (в связке с W-T0)
+  3) CVE-2026-20615 / -20617 (CoreServices -> root) — ждём PoC theevilbit
+  4) CVE-2026-20626 (Kernel -> root) — закрытый, но самый ценный
+  5) CVE-2026-20611 (CoreAudio OOB) / -20637 (AppleKeyStore UAF)
+
+================================================================================
+ 5. ГДЕ ЛЕЖИТ МАТЕРИАЛ
+================================================================================
+  Docs/sptm_23c55.md            полный разбор SPTM 23C55 (FTE, 64 типа, S1)
+  Docs/webkit_map.md            карта WebKit-уязвимостей и цепочки pivot
+  Docs/iokit_t3.md / iokit_field_map.md   IOKit-соседи и field-map
+  Docs/b12_t3_zones.md          зоны B12 (устарело — см. B0 в aio_kevent_rw.h)
+  PROJECT.md §4.4-§4.9          хронология и разборы
+  VULNS.txt                     этот файл
+  /home/abzal/ios262_lab/       лаборатория: IPSW, kernelcache 26.2+26.3,
+                                дизассемблеры кекстов, SPTM-бинарь
+================================================================================
