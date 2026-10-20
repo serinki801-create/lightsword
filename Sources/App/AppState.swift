@@ -109,9 +109,9 @@ final class AppState: ObservableObject {
        add resource, which drives the UNCHECKED capacity path
        (capacity = 2*count, no lower bound) -> obj+40 = 0xffffffff.
        Durable log: Documents/group_oob.log */
-    func groupOob() {
+    func groupOob(_ trigger: Bool) {
         start {
-            nk_iogpu_group_oob_run()
+            nk_iogpu_group_oob_run(trigger ? 1 : 0)
             return true
         }
     }

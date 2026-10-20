@@ -28,5 +28,5 @@ void nk_iokit_fuzz(void);
 void nk_iogpu_oob_run(void);
 void nk_iogpu_oob64_run(void);
 void nk_oob_hunt_run(void);
-void nk_iogpu_group_oob_run(void);
+void nk_iogpu_group_oob_run(int trigger);
 int  nk_aio_uaf_run(int attempts);

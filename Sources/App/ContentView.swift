@@ -34,63 +34,50 @@ struct ContentView: View {
                     }
                     .disabled(state.running)
 
-                    Button {
-                        state.fuzzBatch()
-                    } label: {
-                        Label(state.t("Fuzz batch", "Фазз-прогон"), systemImage: "flame")
-                    }
-                    .disabled(state.running)
-
-                    Button {
-                        state.fuzz2()
-                    } label: {
-                        Label(state.t("Fuzz v2 map", "Фазз v2 карта"), systemImage: "square.grid.2x2")
-                    }
-                    .disabled(state.running)
-
-                    Button {
-                        state.racer()
-                    } label: {
-                        Label(state.t("Race harness", "Гонки"), systemImage: "lifepreserver")
-                    }
-                    .disabled(state.running)
-
-                    Button {
-                        state.iogpuOob64()
-                    } label: {
-                        Label(state.t("IOGPU sel64", "IOGPU sel64"), systemImage: "target")
-                    }
-                    .disabled(state.running)
-
-                    Button {
-                        state.aioUaf()
-                    } label: {
-                        Label(state.t("AIO UAF", "AIO UAF"), systemImage: "bolt.trianglebadge.exclamationmark")
-                    }
-                    .disabled(state.running)
-
                     VStack(spacing: 8) {
+                        Button {
+                            state.fuzz2()
+                        } label: {
+                            Label(state.t("Fuzz v2 map", "Фазз v2 карта"), systemImage: "square.grid.2x2")
+                        }
+                        .disabled(state.running)
+
+                        Button {
+                            state.iogpuOob64()
+                        } label: {
+                            Label(state.t("IOGPU sel64", "IOGPU sel64"), systemImage: "target")
+                        }
+                        .disabled(state.running)
+
                         Button {
                             state.oobHunt()
                         } label: {
                             Label(state.t("OOB Hunt", "OOB Hunt"), systemImage: "scope")
                         }
                         .disabled(state.running)
+                    }
 
+                    VStack(spacing: 8) {
                         Button {
-                            state.groupOob()
+                            state.groupOob(false)
                         } label: {
-                            Label(state.t("Group OOB", "Group OOB"), systemImage: "target")
+                            Label(state.t("Group OOB (read)", "Group OOB (проверка)"), systemImage: "eye")
                         }
                         .disabled(state.running)
 
-                        NavigationLink {
-                            WebKitStageView()
+                        Button {
+                            state.groupOob(true)
                         } label: {
-                            Label(state.t("WebKit pivot", "WebKit пивот"), systemImage: "safari")
+                            Label(state.t("Group OOB (trigger)", "Group OOB (триггер)"), systemImage: "bolt.trianglebadge.exclamationmark")
                         }
+                        .disabled(state.running)
                     }
 
+                    NavigationLink {
+                        WebKitStageView()
+                    } label: {
+                        Label(state.t("WebKit pivot", "WebKit пивот"), systemImage: "safari")
+                    }
 
                 } header: {
                     Label(state.t("Actions", "Действия"), systemImage: "play.circle")
