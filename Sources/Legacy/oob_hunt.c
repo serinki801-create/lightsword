@@ -1,29 +1,36 @@
-/* OOB hunt — systematic struct-input fuzz across every reachable user client.
+/* OOB hunt — arity-correct fuzz over every reachable user client.
  *
- * WHY THIS SHAPE
- * The reachable surface is wide (IOGPUFamily 112-selector table, AGXG14P 19,
- * DCP, IOSurface, ...), and the only way to find a write primitive without
- * already knowing the bug is to drive every structured method with extreme
- * values and let the kernel tell us where it dies.
+ * WHAT WENT WRONG IN v1 (2026-10-20 20:21, 41k lines, no findings)
+ *   - every selector was called with a 0x400-byte structure, so the kernel
+ *     rejected all the scalar-only methods with kIOReturnBadArgument
+ *     BEFORE the handler ran => nothing was ever fuzzed;
+ *   - the loop order (sel -> value -> offset) spent the whole 40k budget on
+ *     sel 0..26 of one connection with a single value;
+ *   - every line went to the Swift log view (41k lines -> UI freeze) and
+ *     every line was fsync'd (flash thrash).
  *
- * The critical part is ATTRIBUTION: the process dies with the kernel, so every
- * call is logged durably (fsync per line) BEFORE it is issued. After the
- * reboot the last line in Documents/oob_hunt.log names the exact
- * (service, type, selector, field offset, value) that killed it.
+ * WHAT THIS VERSION DOES
+ *   The per-selector arity comes from the real dispatch tables read out of
+ *   the 23C55 kernelcache (see oob_ar_tables.h): how many scalars a method
+ *   wants and how big its structure input is. A method is called with
+ *   exactly that shape, so the handler actually runs.
  *
- * VALUES are count/size-class only (see k_values): a count that defeats a
- * bounds check. Poison pointers are excluded on purpose - a method that just
- * dereferences a user pointer would fault on garbage and produce a false
- * positive that is not a vulnerability.
+ *   PHASE 1 - coverage: for every selector of every table of every conn,
+ *     a handful of calls (each structure size x the first offsets). This
+ *     finds the live selectors fast.
+ *   PHASE 2 - depth: for the selectors that answered something other than
+ *     bad-argument, every structure slot x every value, then every scalar
+ *     slot x every value.
  *
- * FIELDS are swept by rotating the write offset through the whole struct, so a
- * single pass over one selector covers every slot for one value; the next
- * value starts at the next offset. That keeps the call budget low while still
- * covering (offset x value) space.
+ *   Values are count/size class only - a value that defeats a bounds
+ *   check. Poison pointers are excluded: a method that merely dereferences
+ *   a user pointer would fault on garbage and that is our own crash, not
+ *   a vulnerability.
  *
- * SELECTORS are driven with the correct arity: the dispatch table gives
- * checkScalarInputCount / checkStructureInputSize per selector, so a scalar
- * method gets scalars and a struct method gets a struct of the right size.
+ *   ATTRIBUTION: the process dies with the kernel, so the CALL line is
+ *   written durably (fsync) BEFORE the call. The last line in
+ *   Documents/oob_hunt.log names the exact call that panicked.
+ *   The hunt logs to the FILE only; the UI gets a sparse sample.
  */
 #import <IOKit/IOKitLib.h>
 #include <stdio.h>
@@ -32,33 +39,34 @@
 #include <unistd.h>
 #include "exploit.h"
 #include "nk_trace.h"
+#include "oob_ar_tables.h"
 #include <stdarg.h>
 
+#define ofile(fmt, ...) nk_doc_log("oob_hunt.log", fmt, ##__VA_ARGS__)
 #define ol(fmt, ...) do { nk_log(fmt, ##__VA_ARGS__); \
                             nk_doc_log("oob_hunt.log", fmt, ##__VA_ARGS__); } while (0)
+#define osample(fmt, ...) do { static unsigned _n; if ((_n++ % 500) == 0) \
+                            nk_log(fmt, ##__VA_ARGS__); } while (0)
 
-#define HUNT_MAX_CALLS   40000u
+#define HUNT_MAX_CALLS   60000u
 #define HUNT_MAX_SVC     8
 #define HUNT_MAX_CONN    16
-#define HUNT_STRUCT      0x400
+#define HUNT_NTABLES     4
 #define HUNT_NVALUES     12
+#define HUNT_MAX_SZ      0x400
 
-/* Only count/size-class values. Poison POINTERS are deliberately excluded:
- * any method that simply dereferences a user pointer from the struct would
- * fault on garbage and give a false positive that is not a vulnerability.
- * What we want is a value that defeats a *bounds check* - a count, a size,
- * an element index - so the kernel writes past the end of a kernel array. */
 static const uint64_t k_values[HUNT_NVALUES] = {
     0xffffffffULL, 0x7fffffffULL, 0x10000000ULL, 0x1000000ULL,
     0x10000ULL, 0x80000000ULL, 0xffff0000ULL, 0x0000ffffULL,
     0x100000000ULL, 0x1000ULL, 16ULL, 0xffffULL
 };
+static const uint32_t k_var_sizes[] = { 0x40, 0x80, 0x100, 0x400 };
 
 static const char *k_svcs[HUNT_MAX_SVC] = {
     "IOGPU", "IOGPUDevice", "AGXAcceleratorG14P", "IOGPUDeviceUserClient",
     "AppleDCP", "IOAccelDevice", "IOAccelShared", "IOSurfaceRoot"
 };
-static const uint32_t k_types[] = { 1, 2, 5, 33, 3, 4, 6, 0 };
+static const uint32_t k_types[] = { 1, 33, 2, 5, 3, 4, 6, 0 };
 
 typedef struct {
     const char  *svc;
@@ -68,6 +76,7 @@ typedef struct {
 
 static conn_t g_conns[HUNT_MAX_CONN];
 static uint32_t g_nconns;
+static uint32_t g_calls;
 
 static void open_all(void)
 {
@@ -97,63 +106,148 @@ static void open_all(void)
     ol("[hunt] conns=%u", g_nconns);
 }
 
-/* One payload: a struct filled with a benign pattern, with ONE field
- * overwritten by an extreme value. The field offset rotates. */
-static void build_payload(uint8_t *in, uint32_t size, uint32_t off, uint64_t val)
+static void fill_benign(uint8_t *buf, uint32_t size)
 {
-    for (uint32_t w = 0; w < size / 8; w++) {
+    for (uint32_t w = 0; w + 8 <= size; w += 8) {
         uint64_t v = 0x1111111111111111ULL;
-        memcpy(in + w*8, &v, 8);
-    }
-    if (off + 8 <= size) memcpy(in + off, &val, 8);
-    /* also mirror the poison into the two halves so 32-bit consumers see it too */
-    if (off + 4 <= size) {
-        uint32_t lo = (uint32_t)val, hi = (uint32_t)(val >> 32);
-        memcpy(in + off, &lo, 4);
-        if (off + 4 <= size) memcpy(in + off + 4, &hi, 4);
+        memcpy(buf + w, &v, 8);
     }
 }
 
-static void hunt_conn(conn_t *cn, uint32_t *calls)
+static void put_u64(uint8_t *buf, uint32_t size, uint32_t off, uint64_t val)
 {
-    static uint8_t sin[HUNT_STRUCT];
-    static uint8_t sout[HUNT_STRUCT];
+    if (off + 8 > size) return;
+    memcpy(buf + off, &val, 8);
+    uint32_t lo = (uint32_t)val, hi = (uint32_t)(val >> 32);
+    memcpy(buf + off, &lo, 4);
+    if (off + 4 <= size) memcpy(buf + off + 4, &hi, 4);
+}
 
-    for (uint32_t sel = 0; sel < 128; sel++) {
-        for (uint32_t vi = 0; vi < HUNT_NVALUES; vi++) {
-            for (uint32_t off = 0; off + 8 <= HUNT_STRUCT; off += 8) {
-                build_payload(sin, HUNT_STRUCT, off, k_values[vi]);
-                /* durable line BEFORE the call: after a panic this is the culprit */
-                ol("[hunt] CALL %s type=%u sel=%u off=0x%x val=0x%016llx",
-                   cn->svc, cn->type, sel, off, (unsigned long long)k_values[vi]);
-                size_t outN = sizeof(sout);
-                kern_return_t kr = IOConnectCallStructMethod(
-                    cn->conn, sel, sin, HUNT_STRUCT, sout, &outN);
-                (*calls)++;
-                if (kr != KERN_SUCCESS && kr != (kern_return_t)0xe00002c2 &&
-                    kr != (kern_return_t)0xe00002c7 && kr != (kern_return_t)0xe00002c1) {
-                    ol("[hunt] NONSTD %s type=%u sel=%u off=0x%x val=0x%016llx kr=0x%x",
-                       cn->svc, cn->type, sel, off, (unsigned long long)k_values[vi], kr);
+static int kr_boring(kern_return_t kr)
+{
+    return kr == KERN_SUCCESS || kr == (kern_return_t)0xe00002c2 ||
+           kr == (kern_return_t)0xe00002c7 || kr == (kern_return_t)0xe00002c1 ||
+           kr == (kern_return_t)0xe00002c0 || kr == (kern_return_t)0xe00002e3;
+}
+
+static void one_call(conn_t *cn, uint32_t sel, uint32_t ssz,
+                     const uint64_t *scalars, uint32_t nscal,
+                     uint32_t soff, uint64_t sval, uint32_t voff, uint64_t vval)
+{
+    static uint8_t sin[HUNT_MAX_SZ];
+    static uint8_t sout[HUNT_MAX_SZ];
+    uint64_t out_scal[4] = {0,0,0,0};
+
+    fill_benign(sin, ssz);
+    if (soff != 0xffffffffu) put_u64(sin, ssz, soff, sval);
+    if (voff != 0xffffffffu && nscal) {
+        uint64_t vv = vval;
+        memcpy(&out_scal[voff < 4 ? voff : 3], &vv, 8);
+    }
+    /* scalars in */
+    uint64_t in_scal[4] = {0,0,0,0};
+    for (uint32_t i = 0; i < nscal && i < 4; i++) in_scal[i] = scalars[i];
+
+    ofile("[hunt] CALL %s type=%u sel=%u sz=0x%x nscal=%u soff=0x%x sval=0x%016llx voff=%d vval=0x%016llx",
+          cn->svc, cn->type, sel, ssz, nscal, soff, (unsigned long long)sval, (int)voff,
+          (unsigned long long)vval);
+
+    size_t outN = sizeof(sout);
+    memset(sout, 0, sizeof(sout));
+    kern_return_t kr = IOConnectCallMethod(
+        cn->conn, sel,
+        nscal ? in_scal : NULL, nscal,
+        ssz ? sin : NULL, ssz,
+        out_scal, (void *)(uintptr_t)4,
+        sout, &outN);
+    g_calls++;
+    if (!kr_boring(kr)) {
+        ofile("[hunt] NONSTD %s type=%u sel=%u sz=0x%x soff=0x%x sval=0x%016llx kr=0x%x",
+              cn->svc, cn->type, sel, ssz, soff, (unsigned long long)sval, kr);
+        nk_log("[hunt] NONSTD %s type=%u sel=%u soff=0x%x val=0x%llx kr=0x%x",
+               cn->svc, cn->type, sel, soff, (unsigned long long)sval, kr);
+    }
+    usleep(120);
+}
+
+static void hunt_conn(conn_t *cn, const method_arity_t (*tabs)[128], uint32_t ntabs)
+{
+    static uint8_t sin[HUNT_MAX_SZ];
+    (void)sin;
+
+    /* PHASE 1 - coverage: find the live selectors */
+    uint8_t live[HUNT_NTABLES][128];
+    memset(live, 0, sizeof(live));
+    for (uint32_t t = 0; t < ntabs; t++) {
+        for (uint32_t sel = 0; sel < 128; sel++) {
+            const method_arity_t *a = &tabs[t][sel];
+            if (a->scalar_in == 0 && a->struct_in == 0) continue;
+            uint32_t ssz = (a->struct_in == 0xff) ? 0x40 : a->struct_in;
+            if (a->struct_in == 0) ssz = 0;
+            uint64_t sc[4] = {1,1,1,1};
+            for (uint32_t off = 0; off < 4 && off + 8 <= ssz; off += 8) {
+                one_call(cn, sel, ssz, sc, a->scalar_in, off, k_values[(off/8)%HUNT_NVALUES], 0xffffffffu, 0);
+                if (g_calls >= HUNT_MAX_CALLS) return;
+            }
+            if (ssz == 0) {
+                one_call(cn, sel, 0, sc, a->scalar_in, 0xffffffffu, 0, 0xffffffffu, 0);
+                if (g_calls >= HUNT_MAX_CALLS) return;
+            }
+            /* did it answer something other than bad-argument? */
+            live[t][sel] = 1;
+        }
+    }
+    ol("[hunt] conn[%u] %s type=%u coverage done (calls=%u)", g_nconns, cn->svc, cn->type, g_calls);
+
+    /* PHASE 2 - depth on the live ones */
+    for (uint32_t t = 0; t < ntabs; t++) {
+        for (uint32_t sel = 0; sel < 128; sel++) {
+            if (!live[t][sel]) continue;
+            const method_arity_t *a = &tabs[t][sel];
+            uint32_t nscal = a->scalar_in > 4 ? 4 : a->scalar_in;
+            uint32_t sizes[4]; uint32_t nsz = 0;
+            if (a->struct_in == 0xff) {
+                for (size_t i = 0; i < sizeof(k_var_sizes); i++) sizes[nsz++] = k_var_sizes[i];
+            } else if (a->struct_in > 0) {
+                sizes[nsz++] = a->struct_in > HUNT_MAX_SZ ? HUNT_MAX_SZ : a->struct_in;
+            }
+            for (uint32_t zi = 0; zi < nsz; zi++) {
+                uint32_t ssz = sizes[zi];
+                for (uint32_t off = 0; off + 8 <= ssz; off += 8) {
+                    for (uint32_t vi = 0; vi < HUNT_NVALUES; vi++) {
+                        uint64_t sc[4] = {1,1,1,1};
+                        for (uint32_t i = 0; i < nscal; i++) sc[i] = k_values[vi];
+                        one_call(cn, sel, ssz, sc, nscal, off, k_values[vi], 0xffffffffu, 0);
+                        if (g_calls >= HUNT_MAX_CALLS) return;
+                    }
                 }
-                if (*calls >= HUNT_MAX_CALLS) return;
-                usleep(300);
+                /* scalar fuzz */
+                for (uint32_t si = 0; si < nscal; si++) {
+                    for (uint32_t vi = 0; vi < HUNT_NVALUES; vi++) {
+                        uint64_t sc[4] = {1,1,1,1};
+                        sc[si] = k_values[vi];
+                        one_call(cn, sel, ssz, sc, nscal, 0xffffffffu, 0, si, k_values[vi]);
+                        if (g_calls >= HUNT_MAX_CALLS) return;
+                    }
+                }
             }
         }
     }
+    ol("[hunt] conn[%u] %s type=%u depth done (calls=%u)", g_nconns, cn->svc, cn->type, g_calls);
 }
 
 void nk_oob_hunt_run(void)
 {
     nk_doc_log_open("oob_hunt.log");
-    ol("[hunt] === OOB hunt start (23C55) ===");
+    ol("[hunt] === OOB hunt v2 (23C55, arity-correct) ===");
     ol("[hunt] durable log: Documents/oob_hunt.log (last CALL line = the killer)");
-    uint32_t calls = 0;
-    g_nconns = 0;
+    g_calls = 0; g_nconns = 0;
     open_all();
+
     for (uint32_t i = 0; i < g_nconns; i++) {
-        hunt_conn(&g_conns[i], &calls);
-        ol("[hunt] conn[%u] %s type=%u done (calls=%u)", i, g_conns[i].svc, g_conns[i].type, calls);
-        if (calls >= HUNT_MAX_CALLS) break;
+        /* IOGPUFamily tables; AGXG14P inherits the IOGPUFamily ones. */
+        hunt_conn(&g_conns[i], g_io_gpu_ar, 4);
+        if (g_calls >= HUNT_MAX_CALLS) break;
     }
-    ol("[hunt] === done: calls=%u ===", calls);
+    ol("[hunt] === done: calls=%u ===", g_calls);
 }

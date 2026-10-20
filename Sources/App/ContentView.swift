@@ -69,17 +69,26 @@ struct ContentView: View {
                     }
                     .disabled(state.running)
 
-                    Button {
-                        state.oobHunt()
-                    } label: {
-                        Label(state.t("OOB Hunt", "OOB Hunt"), systemImage: "scope")
-                    }
-                    .disabled(state.running)
+                    VStack(spacing: 8) {
+                        Button {
+                            state.oobHunt()
+                        } label: {
+                            Label(state.t("OOB Hunt", "OOB Hunt"), systemImage: "scope")
+                        }
+                        .disabled(state.running)
 
-                    NavigationLink {
-                        WebKitStageView()
-                    } label: {
-                        Label(state.t("WebKit pivot", "WebKit пивот"), systemImage: "safari")
+                        Button {
+                            state.groupOob()
+                        } label: {
+                            Label(state.t("Group OOB", "Group OOB"), systemImage: "target")
+                        }
+                        .disabled(state.running)
+
+                        NavigationLink {
+                            WebKitStageView()
+                        } label: {
+                            Label(state.t("WebKit pivot", "WebKit пивот"), systemImage: "safari")
+                        }
                     }
 
 

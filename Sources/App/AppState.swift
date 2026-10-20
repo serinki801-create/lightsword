@@ -105,6 +105,17 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* IOGPU group-growth OOB probe: create resource -> create group ->
+       add resource, which drives the UNCHECKED capacity path
+       (capacity = 2*count, no lower bound) -> obj+40 = 0xffffffff.
+       Durable log: Documents/group_oob.log */
+    func groupOob() {
+        start {
+            nk_iogpu_group_oob_run()
+            return true
+        }
+    }
+
     /* OOB hunt — systematic struct-input fuzz over every reachable user
        client, with a durable log line before every call so the last line
        names the call that panicked the kernel. */
