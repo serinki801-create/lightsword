@@ -72,6 +72,15 @@ struct ContentView: View {
 
                     VStack(spacing: 8) {
                         Button {
+                            state.kernMap()
+                        } label: {
+                            Label(state.t("Kernel map (leak -> mapping)", "Kernel map (утечка -> отображение)"), systemImage: "map")
+                        }
+                        .disabled(state.running)
+                    }
+
+                    VStack(spacing: 8) {
+                        Button {
                             state.kernLeakHunt()
                         } label: {
                             Label(state.t("Kernel leak hunt", "Охота за утечкой ядра"), systemImage: "eye.trianglebadge.exclamationmark")

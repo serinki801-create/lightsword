@@ -148,6 +148,15 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* Turn a leaked kernel pointer into a mapping: IOMemoryDescriptor
+       GetAddress on it gives a userspace view of kernel memory. */
+    func kernMap() {
+        start {
+            nk_kern_map_try()
+            return true
+        }
+    }
+
     /* Kernel leak hunt: find a user client that returns a kernel address.
        Durable log: Documents/kern_leak.log */
     func kernLeakHunt() {
