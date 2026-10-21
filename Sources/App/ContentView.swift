@@ -73,6 +73,15 @@ struct ContentView: View {
                         .disabled(state.running)
                     }
 
+                    VStack(spacing: 8) {
+                        Button {
+                            state.capMatrix()
+                        } label: {
+                            Label(state.t("Capacity matrix", "Матрица capacity"), systemImage: "tablecells")
+                        }
+                        .disabled(state.running)
+                    }
+
                     NavigationLink {
                         WebKitStageView()
                     } label: {

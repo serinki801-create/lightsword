@@ -117,6 +117,15 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* Capacity matrix: which struct field is the real capacity and what
+       gates it. Durable log: Documents/cap_matrix.log */
+    func capMatrix() {
+        start {
+            nk_iogpu_capacity_matrix()
+            return true
+        }
+    }
+
     /* OOB hunt — systematic struct-input fuzz over every reachable user
        client, with a durable log line before every call so the last line
        names the call that panicked the kernel. */

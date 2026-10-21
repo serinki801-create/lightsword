@@ -769,6 +769,62 @@ Sources/Legacy/oob_hunt.c  ->  кнопка «OOB Hunt» на Actions.
        пробника (TRIGGER и READ-ONLY) стартовали одновременно (разница 1 мс) и
        гонялись за общими глобалами. Добавлен синхронный флаг `starting`.
 
+
+8.12 КАРТА ПРИМИТИВА CVE-2025-24257 НА 23C55 (полный реверш IOGPUFamily)
+
+ГРУППА (group-info), создаётся в 0x9f61200:
+  +0x00  element array  (kalloc_type, cap*8)
+  +0x08  array 2        (kalloc_type, cap*16)
+  +0x10  bitmap words   (kalloc, cap*4)      <- 4 байта на bucket
+  +0x18  byte bitmap    (kalloc, (cap+63)/8)
+  +0x20  capacity
+  +0x24  capacity-1
+  +0x28  MASK = (capacity>>6)-1
+  +0x2c  log2(capacity)
+  +0x34  3-й параметр
+  +0x40  ok flag
+
+INSERT (0x9f62bdc..0x9f62c68):
+  value  = [resource+0x70]              (хеш-вход, IOSurface-поле)
+  hash   = value * 0x9e3779b97f4a7c15
+  bucket = hash >> (64 - log2(capacity))   ; 0x9f62c04 lsr x9,x20,x9
+  bitmap[bucket] читается (ldr w10,[x12]) и потом RMW-ится (bic/orr)
+  индекс элемента = (bit + bucket) & (capacity-1)
+
+ПОЧЕМУ ЭТО OOB:
+  при capacity == 1  log2(capacity) == 0  =>  сдвиг на 64 вырождается в 0
+  => bucket = ПОЛНЫЙ 64-битный хеш  =>  доступ к bitmap уходит за
+  аллокацию на километры, и это 4-байтный RMW (установка/сброс бита).
+  При capacity = 2^k (k>=1) bucket < capacity и всё в границах.
+  => ТРИГГЕР ТРЕБУЕТ РОВНО capacity == 1.
+
+ГЕЙТЫ (диспетчер 0x9f73344, команда в struct[0]):
+  cmd==3   -> 0x9f60fc8 -> CREATE 0x9f60fcc, w2 = struct[56]
+              гейт: cmp w2,#63 (b.hi) + проверка "степень двойки" на w2
+              => struct[56] это ТИП РЕСУРСА, не capacity!
+              (объясняет: 1..63 -> NoResources, 64/128/4096 -> ok)
+  cmd==64  -> 0x9f612f0 -> 0x9f4d0e0 (2D/1D путь)
+              struct[56] = capacity, struct[80] = размер измерения
+              capacity округляется ВВЕРХ: (cap+dim-1) & -dim  (0x9f4d328)
+              struct[80] обязан быть кратен limit ([client+16]+628)
+  cmd==130 -> 0x9f606d8  add-resource (struct[56] = IOSurface global id)
+  cmd==128 -> 0x9f60050  x5 = struct[56]
+
+GROW (0x9f64910) НЕ УВЕЛИЧИВАЕТ capacity: mov x1,x21 = x0->+0x20,
+  т.е. re-init с ТЕМ ЖЕ capacity. Маска не меняется.
+У init ровно два входа: CREATE (0x9f610cc) и GROW (0x9f649ac).
+
+ИТОГ: гейт cmd=3 закрыт (тип>63 и степень двойки). Остаётся cmd=64:
+  если dim=1 проходит гейт "кратен limit", capacity остаётся 1 => OOB.
+  Проверяется фазой H/I/J матрицы.
+
+МАТРИЦА (новая кнопка "Матрица capacity", Documents/cap_matrix.log):
+  baseline (рабочий): cmd=3, f56=64 f60=0 f64=0 f72=0 f80=1
+  A: f56 sweep | B: f60 | C: f64 | D: f72 | E: f80
+  H: cmd=64, cap=1, dim in {1,2,4,...,16384}
+  I: cmd=64, cap=1, dim=1, f64/f72 sweep
+  J: cmd=64, dim=1, capacity sweep
+
 ================================================================================
  4. ПРИОРИТЕТ (обновлено 2026-10-20 21:05, AIO отложен по решению dj)
 ================================================================================
