@@ -190,32 +190,41 @@ __attribute__((unused)) static const kl_shape_t k_kl_shapes[] = {
  * the HID system, the SEP and the rest. */
 static void kl_registry_sweep(void)
 {
-    /* IORegistryCreateIterator + IOIteratorNext returns nothing on iOS
-     * (a registry iterator is not a plain io_iterator_t), so the walk uses
-     * IOServiceGetMatchingServices with a NULL name - which matches every
-     * service - and a plain IOIteratorNext. The cost is bounded by the
-     * caps below, and nothing is logged per service: nk_doc_log fsyncs
-     * every line, and thousands of lines is what made the phone freeze. */
-    CFMutableDictionaryRef m = IOServiceMatching(NULL);
-    if (!m) { klf("[KL] no registry match"); return; }
-    io_iterator_t it = 0;
-    if (IOServiceGetMatchingServices(kIOMasterPortDefault, m, &it) != KERN_SUCCESS) {
-        klf("[KL] registry walk failed");
+    /* IORegistryCreateIterator does not exist in the iOS SDK and the
+     * registry iterator it makes is not a plain io_iterator_t, so
+     * IOIteratorNext on it returns nothing. The API the iOS SDK documents
+     * is IORegistryEntryCreateIterator, and IOIteratorNext does work on
+     * its handle. It also walks the tree lazily, so the cost is bounded by
+     * how many entries we look at.
+     *
+     * IOServiceMatching(NULL) is NOT usable: it materialises every service
+     * in the registry at once and the device stalls. */
+    io_iterator_t iter = 0;
+    kern_return_t kr = IORegistryEntryCreateIterator(
+        kIOMasterPortDefault, kIOServicePlane, kIORegistryIterateRecursively, &iter);
+    if (kr != KERN_SUCCESS || !iter) {
+        klf("[KL] registry iterator failed (kr=0x%x)", kr);
         return;
     }
     static const uint32_t reg_types[] = { 0, 1, 2 };
-    io_service_t svc;
+    io_registry_entry_t ent;
     uint32_t seen = 0, opened = 0, since_yield = 0;
-    while ((svc = IOIteratorNext(it))) {
+    struct timespec t0, tnow;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    while ((ent = (io_registry_entry_t)IOIteratorNext(iter)) != 0) {
         seen++;
-        if (seen > 250) break;
+        if (seen > 300) { IOObjectRelease(ent); break; }
+        /* hard time budget: the watchdog is not optional */
+        clock_gettime(CLOCK_MONOTONIC, &tnow);
+        double dt = (double)(tnow.tv_sec - t0.tv_sec) + 1e-6 * (double)(tnow.tv_nsec - t0.tv_nsec);
+        if (dt > 20.0) { IOObjectRelease(ent); klf("[KL] registry walk: time budget hit"); break; }
         char nm[128] = {0};
         io_name_t onm = {0};
-        if (IORegistryEntryGetName(svc, onm) == KERN_SUCCESS)
+        if (IORegistryEntryGetName(ent, onm) == KERN_SUCCESS)
             strncpy(nm, (const char *)onm, sizeof(nm) - 1);
         for (size_t t = 0; t < sizeof(reg_types)/sizeof(reg_types[0]); t++) {
             io_connect_t c = MACH_PORT_NULL;
-            if (IOServiceOpen(svc, mach_task_self(), reg_types[t], &c) == KERN_SUCCESS && c) {
+            if (IOServiceOpen(ent, mach_task_self(), reg_types[t], &c) == KERN_SUCCESS && c) {
                 if (g_kl_nconns < KL_MAX_CONN) {
                     g_kl_conns[g_kl_nconns].svc = kl_name_intern(nm[0] ? nm : "?");
                     g_kl_conns[g_kl_nconns].type = reg_types[t];
@@ -231,9 +240,9 @@ static void kl_registry_sweep(void)
             }
         }
         if (since_yield >= 20) { since_yield = 0; usleep(3000); }
-        IOObjectRelease(svc);
+        IOObjectRelease(ent);
     }
-    IOObjectRelease(it);
+    IOObjectRelease(iter);
     klf("[KL] registry walk: services=%u opened=%u", seen, opened);
 }
 
