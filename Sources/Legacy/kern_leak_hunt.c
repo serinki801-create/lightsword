@@ -40,7 +40,7 @@
 #define klf(fmt, ...) do { nk_log(fmt, ##__VA_ARGS__); \
                            nk_doc_log("kern_leak.log", fmt, ##__VA_ARGS__); } while (0)
 
-#define KL_MAX_CONN  24
+#define KL_MAX_CONN  64
 #define KL_MAX_SEL   256
 #define KL_MAX_SZ    0x400
 #define KL_MAX_SVC   40
@@ -65,6 +65,21 @@ typedef struct {
     uint32_t     type;
     io_connect_t conn;
 } kl_conn_t;
+
+/* A service name discovered in the IORegistry has to outlive the sweep,
+ * so it is copied into a static pool. */
+#define KL_NAME_POOL 4096
+static char g_kl_names[KL_NAME_POOL];
+static uint32_t g_kl_names_used;
+static const char *kl_name_intern(const char *s)
+{
+    size_t n = strlen(s) + 1;
+    if (g_kl_names_used + n > KL_NAME_POOL) return "<?>";
+    char *p = g_kl_names + g_kl_names_used;
+    memcpy(p, s, n);
+    g_kl_names_used += (uint32_t)n;
+    return p;
+}
 
 static kl_conn_t g_kl_conns[KL_MAX_CONN];
 static uint32_t  g_kl_nconns;
@@ -130,6 +145,53 @@ static const kl_shape_t k_kl_shapes[] = {
 };
 #define KL_NSHAPES (sizeof(k_kl_shapes)/sizeof(k_kl_shapes[0]))
 
+
+/* THE REGISTRY SWEEP.
+ *
+ * Matching by service name found almost nothing: on this build
+ * AppleAVE2, AppleAVD, AppleSEP, IOHIDEventSystemClient and friends are
+ * not reachable under those names, so the only clients that opened were
+ * IOGPU, AGXAcceleratorG14P, IOSurfaceRoot and IOMobileFramebuffer. The
+ * registry itself knows every service, so walk it and try to open a user
+ * client on each one - that is the only way to reach the media engine,
+ * the HID system, the SEP and the rest. */
+static void kl_registry_sweep(void)
+{
+    CFMutableDictionaryRef m = IOServiceMatching(NULL);
+    if (!m) { klf("[KL] no registry match"); return; }
+    io_iterator_t it = 0;
+    if (IOServiceGetMatchingServices(kIOMasterPortDefault, m, &it) != KERN_SUCCESS) {
+        klf("[KL] registry walk failed");
+        return;
+    }
+    io_service_t svc;
+    uint32_t seen = 0, opened = 0;
+    while ((svc = IOIteratorNext(it))) {
+        seen++;
+        char nm[128] = {0};
+        io_name_t onm = {0};
+        if (IORegistryEntryGetName(svc, onm) == KERN_SUCCESS) {
+            strncpy(nm, (const char *)onm, sizeof(nm) - 1);
+        }
+        for (size_t t = 0; t < sizeof(k_kl_types)/sizeof(k_kl_types[0]); t++) {
+            io_connect_t c = MACH_PORT_NULL;
+            if (IOServiceOpen(svc, mach_task_self(), k_kl_types[t], &c) == KERN_SUCCESS && c) {
+                if (g_kl_nconns < KL_MAX_CONN) {
+                    g_kl_conns[g_kl_nconns].svc = kl_name_intern(nm[0] ? nm : "?");
+                    g_kl_conns[g_kl_nconns].type = k_kl_types[t];
+                    g_kl_conns[g_kl_nconns].conn = c;
+                    klf("[KL] REG OPEN %s type=%u conn[%u]", g_kl_conns[g_kl_nconns].svc,
+                        k_kl_types[t], g_kl_nconns);
+                    g_kl_nconns++;
+                    opened++;
+                } else {
+                    IOServiceClose(c);
+                }
+            }
+        }
+    }
+    klf("[KL] registry walk: services=%u opened=%u", seen, opened);
+}
 static void kl_call(kl_conn_t *cn, uint32_t sel, const kl_shape_t *sh,
                     const char *shape_tag)
 {
@@ -278,6 +340,11 @@ void nk_kernel_leak_hunt(void)
         }
         if (!opened_here) klf("[KL] no user client for %s", k_kl_svcs[s]);
     }
+    klf("[KL] named phase conns=%u", g_kl_nconns);
+
+    /* the named phase only reached a handful of services - walk the whole
+     * registry and open a user client on everything */
+    kl_registry_sweep();
     klf("[KL] conns=%u", g_kl_nconns);
 
     /* 3. sweep: for every conn, every selector, every shape */

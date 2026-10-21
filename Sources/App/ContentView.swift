@@ -85,6 +85,13 @@ struct ContentView: View {
                             Label(state.t("Group OOB (remove path)", "Group OOB (путь удаления)"), systemImage: "eraser")
                         }
                         .disabled(state.running)
+
+                        Button {
+                            state.groupOobDup()
+                        } label: {
+                            Label(state.t("Group OOB (dup add)", "Group OOB (дубль-insert)"), systemImage: "square.on.square")
+                        }
+                        .disabled(state.running)
                     }
 
                     VStack(spacing: 8) {

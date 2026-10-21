@@ -138,6 +138,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* Duplicate-add trigger: adding the same resource twice forces the
+       removal that decrements the slot table mask. Durable log:
+       Documents/group_oob.log */
+    func groupOobDup() {
+        start {
+            nk_iogpu_group_oob_run(4)
+            return true
+        }
+    }
+
     /* Kernel leak hunt: find a user client that returns a kernel address.
        Durable log: Documents/kern_leak.log */
     func kernLeakHunt() {
@@ -286,7 +296,10 @@ final class AppState: ObservableObject {
            (TRIGGER + READ-ONLY) ran concurrently, racing on shared state. */
         guard !running, !starting else { return }
         starting = true
-        defer { starting = false }
+        /* `starting` is cleared when the work finishes, not when start()
+           returns - a defer here released it immediately and let three
+           probe sessions run at once. It is reset in the completion block
+           below. */
 
         nk_set_log(nkLogBridge)
         nk_set_probe_done { probeId, verdict in
@@ -311,6 +324,7 @@ final class AppState: ObservableObject {
             let root = g_nk.has_root
 
             nk_async_main {
+                self.starting = false
                 self.slide = s
                 self.base = b
                 self.running = false
