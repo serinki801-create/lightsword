@@ -40,6 +40,7 @@ final class AppState: ObservableObject {
     @Published var slide: UInt64 = 0
     @Published var base: UInt64 = 0
     @Published var running: Bool = false
+    private var starting = false
     @Published var status: RunStatus = .idle
 
     @Published var lang: String = UserDefaults.standard.string(forKey: "lang") ?? "ru" {
@@ -232,7 +233,12 @@ final class AppState: ObservableObject {
     }
 
     private func start(_ work: @escaping () -> Bool) {
-        guard !running else { return }
+        /* The guard must be SYNCHRONOUS. `running` is set from nk_async_main, so
+           a second tap in that window slipped through and two probe instances
+           (TRIGGER + READ-ONLY) ran concurrently, racing on shared state. */
+        guard !running, !starting else { return }
+        starting = true
+        defer { starting = false }
 
         nk_set_log(nkLogBridge)
         nk_set_probe_done { probeId, verdict in
