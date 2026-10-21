@@ -685,6 +685,53 @@ Sources/Legacy/oob_hunt.c  ->  кнопка «OOB Hunt» на Actions.
   Побочно подтверждено: sel 8, cap=0x40 => CREATED (маска корректна, underflow
   на creation-пути закрыт); cap 0x1..0x20 => 0xe00002be (NoResources).
 
+
+8.9 Разбор прогона 15:07 — cmd 130 не принимает ни один ключ; семантика lookup
+  [grp] group 0 -> kr=0x0 ptr=0x11fe600c0
+  [grp] group 1 -> kr=0x0 ptr=0x11fe60180
+  [grp] GROW key[0..15] = 0x0..0xf  -> ВСЕ 0xe00002c2
+  [grp] GROW key[16] = grpA 0x11fe600c0 -> 0xe00002c2
+  [grp] GROW key[17] = grpB 0x11fe60180 -> 0xe00002c2
+  => struct[56] не индекс и не указатель.
+
+  Как устроен lookup (ядро, 0xa243df8 -> 0xa243eb4 -> 0xa243af8):
+    0xa243e0c: mov  x21, x2      ; x21 = OWNER
+    0xa243e10: mov  x22, x1      ; x22 = KEY
+    0xa243e18: mov  x1, x2       ; 1-й шаг ищет по OWNER
+    0xa243e1c: bl   0xa243eb4
+    0xa243eb4: mov  x20, x1       ; x20 = owner
+    0xa243ed4: add  x8, x19, #0x418
+    0xa243ed8: ldr  x9, [x19, #0x418]
+    0xa243edc: cmp  x9, x20       ; слот1.owner == owner ?  (64-битное!)
+    0xa243ee0: b.eq found
+    0xa243ee4: ldr  x9, [x19, #0x428]  ; слот2
+    ...
+    0xa243e44: bl   0xa243af8(x0=field_240, x1=KEY, x2=OWNER, x3=найденный объект)
+    0xa243af8 (2-й шаг, по ключу внутри объекта):
+      ldr  w9, [x0, #0xd8]   ; count
+      cmp  w9, w20           ; count vs KEY
+      b.ls not_found
+      ldr  x8, [x22, #0xd0]  ; массив
+      lsl  x9, x9, #3         ; index = KEY
+      ldr  x19, [x8]          ; element
+      ldr  w8, [x19, #0x10]   ; element->0x10
+      cmp  w8, w20            ; element->0x10 == KEY ?
+      b.ne fail
+      ldr  x8, [x19, #0x170]  ; element->0x170
+      cmp  x8, x21            ; == OWNER ?
+  Вывод: сначала ищется объект по OWNER (target->[0x80]), потом внутри — элемент с
+  element->0x10 == KEY. Значит ресурсы регистрируются в структуре, которой у нас
+  пока нет: cmd=3 создаёт группу, но она, похоже, не регистрируется в этом списке
+  (или регистрируется под другим owner'ом).
+
+  Пробник расширен:
+    * IOSurface создаётся ДО grow-теста, его global id (IOSurfaceGetID отработал:
+      23 / 167) добавляется в кандидаты на ключ;
+    * ключи расширены с 16 до 256 + указатели на группы + global id + ref поверхности;
+    * при создании группы в struct[60] кладётся global id поверхности (связка
+      группы с поверхностью);
+    * cmd=3 создаётся с capacity=64 (единственная принимаемая на creation-пути).
+
 ================================================================================
  4. ПРИОРИТЕТ (обновлено 2026-10-20 21:05, AIO отложен по решению dj)
 ================================================================================

