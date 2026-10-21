@@ -71,6 +71,13 @@ struct ContentView: View {
                             Label(state.t("Group OOB (trigger)", "Group OOB (триггер)"), systemImage: "bolt.trianglebadge.exclamationmark")
                         }
                         .disabled(state.running)
+
+                        Button {
+                            state.groupOob64()
+                        } label: {
+                            Label(state.t("Group OOB (cmd64 cap=1)", "Group OOB (cmd64 cap=1)"), systemImage: "flame")
+                        }
+                        .disabled(state.running)
                     }
 
                     VStack(spacing: 8) {

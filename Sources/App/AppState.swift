@@ -117,6 +117,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* cmd=64 underflow trigger: a group with capacity 1, then the insert
+       whose bucket degenerates into the full hash. Durable log:
+       Documents/group_oob.log */
+    func groupOob64() {
+        start {
+            nk_iogpu_group_oob_run(2)
+            return true
+        }
+    }
+
     /* Kernel leak hunt: find a user client that returns a kernel address.
        Durable log: Documents/kern_leak.log */
     func kernLeakHunt() {

