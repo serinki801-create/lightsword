@@ -111,6 +111,12 @@ typedef struct {
 } doclog_t;
 
 static doclog_t g_doclogs[DOCLOG_MAX];
+
+/* The directory the Swift side wants the logs in. In the LiveContainer
+ * guest the C side writes into a remapped home that the Files app does
+ * not show, so the Swift side hands over its real Documents directory and
+ * the logs are written THERE first. */
+static char g_visible_dir[512];
 static pthread_mutex_t g_doclog_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* fd must start at -1: a static array zero-initialises fd to 0, and 0 is a
@@ -208,6 +214,15 @@ int nk_doc_log_export(const char *dest_dir)
     return copied;
 }
 
+void nk_doc_log_set_visible_dir(const char *dir)
+{
+    if (!dir || !dir[0]) return;
+    size_t i = 0;
+    for (; dir[i] && i < sizeof(g_visible_dir) - 1; i++) g_visible_dir[i] = dir[i];
+    g_visible_dir[i] = 0;
+    ensure_dir(g_visible_dir);
+}
+
 void nk_doc_log_open(const char *name)
 {
     if (!name || !name[0]) return;
@@ -225,9 +240,10 @@ void nk_doc_log_open(const char *name)
         if (g_doclogs[i].fd >= 0) continue;
         snprintf(g_doclogs[i].name, sizeof(g_doclogs[i].name), "%s", name);
 
-        /* Try multiple candidate homes */
-        const char *homes[3];
+        /* Try multiple candidate homes - the Swift-visible one first */
+        const char *homes[4];
         int nh = 0;
+        if (g_visible_dir[0]) homes[nh++] = g_visible_dir;
         if (nk_home_dir() && nk_home_dir()[0]) homes[nh++] = nk_home_dir();
         const char *env = getenv("HOME");
         if (env && env[0]) homes[nh++] = env;

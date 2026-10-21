@@ -29,6 +29,15 @@ struct ContentView: View {
 
                     VStack(spacing: 8) {
                         Button {
+                            state.oobHunt()
+                        } label: {
+                            Label(state.t("OOB hunt v2 (arity-correct)", "OOB hunt v2 (по арности)"), systemImage: "scope")
+                        }
+                        .disabled(state.running)
+                    }
+
+                    VStack(spacing: 8) {
+                        Button {
                             state.aioUaf()
                         } label: {
                             Label(state.t("AIO kevent UAF (kernel leak)", "AIO kevent UAF (утечка ядра)"), systemImage: "flame.circle")

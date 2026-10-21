@@ -30,6 +30,16 @@ struct NatsukApp: App {
                      * so the paths are known before any probe runs, and show
                      * the absolute paths in the UI — the guest container UUID
                      * is not guessable from inside the app. */
+                    /* Tell the C side where the logs should land: the real
+                       Documents directory of this app, the one the Files app
+                       shows. The guest's remapped home is not visible. */
+                    if let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                        try? FileManager.default.createDirectory(at: docsURL, withIntermediateDirectories: true)
+                        docsURL.withUnsafeFileSystemRepresentation { p in
+                            if let p = p { nk_doc_log_set_visible_dir(String(cString: p)) }
+                        }
+                        AppState.shared.append("LOGDIR: \(docsURL.path)")
+                    }
                     nk_doc_log_open("srk801.log")
                     nk_doc_log_open("oob64.log")
                     /* Open every known probe log so the export below can pull
