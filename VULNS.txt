@@ -1185,6 +1185,39 @@ PAC-подписанных указателях (адрес в младших 56
 максимум 10, 11-й давал "extra argument in call" на NavigationLink.
 Хвост обёрнут в общий VStack.
 
+
+8.24 AIO KEVENT UAF - ЖИВОЙ CVE НА 26.2, ГДЕ ИМЕННО УТЕКАЕТ УКАЗАТЕЛЬ
+
+hunt/aiouaf/aio_kevent_uaf.m (донор-PoC) прямо пишет:
+  Affected: iOS 26.2 (xnu-12377.62.10) and earlier
+  Fixed:    iOS 26.3 (xnu-12377.81.4)
+  Impact:   kernel panic from app sandbox, no entitlements
+  Success:  ~70% (CPU-affinity LIFO reclaim)
+Корень: lio_listio() регистрирует kevent ПОСЛЕ постановки AIO-работы
+=> гонка с aio_return() => dangling knote => filt_aioprocess() на
+освобождённой записи => double-free через aio_entry_unref().
+
+ГДЕ УТЕКАЕТ УКАЗАТЕЛЬ:
+  filt_aioprocess пишет ТОЛЬКО ext[0] (=entry+0x28, errorval) и
+  ext[1] (=entry+0x20, returnval). ext[2]/ext[3] он НЕ трогает - там
+  остаётся мусор из буфера kevent в ядре, то есть хвост стека ядра:
+  возвращаемые адреса, frame pointers. Это и есть кандидат на якорь
+  KASLR. До сих пор ext2/ext3 только сканировались на kernel VA, но не
+  печатались - теперь печатаются всегда.
+  Плюс итоговая сводка: "[AIO-B12] KVA hits=N best_field=... best=0x...".
+
+Второй канал - double-free: после filt_aioprocess unref'а dangling
+записи освобождается reclaimed-запись, а её содержимое = aio_workq_entry
+с kernel-указателями на +0x38 (lio_leader) и +0x40 (procp). Освобождённый
+чанк уходит в freelist с этими указателями - если его переиспользует
+kernel-объект, чтение его полей даст настоящий kernel VA.
+
+СЛЕДУЮЩИЕ ШАГИ (после первого прогона):
+  1) если ext2/ext3 дают kernel VA - это якорь KASLR; дальше считаем
+     base = value - (unslid адрес функции) и получаем kernel read/write;
+  2) если нет - поднимаем hit-rate: донор-PoC использует NRECLAIM=8
+     reclaim-слотов (у нас один), и добавляем double-free-канал.
+
 ================================================================================
  4. ПРИОРИТЕТ (обновлено 2026-10-20 21:05, AIO отложен по решению dj)
 ================================================================================
