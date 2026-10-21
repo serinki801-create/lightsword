@@ -44,6 +44,7 @@
 #define KL_MAX_SEL   256
 #define KL_MAX_SZ    0x400
 #define KL_MAX_SVC   40
+#define KL_MAX_CALLS 40000u
 
 static const char *k_kl_svcs[KL_MAX_SVC] = {
     "IOGPU", "IOGPUDevice", "IOGPUDeviceUserClient", "AGXAcceleratorG14P",
@@ -89,13 +90,22 @@ static uint32_t  g_kl_calls;
 #define KL_KERNEL_LO 0xfffffff000000000ULL
 #define KL_KERNEL_HI 0xffffffff00000000ULL
 
+/* A kernel pointer on arm64e comes back PAC-signed: the address lives in the
+ * low 56 bits (0xfffffff0_xxxxxxxx) and the pointer authentication code
+ * occupies the top 8-16 bits. Comparing the raw value against
+ * 0xfffffff000000000 misses every PAC-signed pointer, which is exactly
+ * what an IOKit method that returns an OSObject* hands back. So the PAC
+ * bits are masked off before the range test. */
+#define KL_PAC_MASK 0x00ffffffffffffffULL
+
 static int kl_is_kernel_va(uint64_t v)
 {
-    if (v < KL_KERNEL_LO || v >= KL_KERNEL_HI) return 0;
-    if ((v & 0xffffffff0000ffffULL) == 0x2bad000000000000ULL) return 0;
-    if (v == 0xffffffffffffffffULL) return 0;
-    if (v == 0xdeadbeefdeadbeefULL) return 0;
-    if (v == 0x00000000deadbeefULL) return 0;
+    uint64_t a = v & KL_PAC_MASK;
+    if (a < KL_KERNEL_LO || a >= KL_KERNEL_HI) return 0;
+    if ((a & 0xffffffff0000ffffULL) == 0x2bad000000000000ULL) return 0;
+    if (a == 0xffffffffffffffffULL) return 0;
+    if (a == 0xdeadbeefdeadbeefULL) return 0;
+    if (a == 0x00000000deadbeefULL) return 0;
     return 1;
 }
 
@@ -136,7 +146,7 @@ static int kl_kr_boring(kern_return_t kr)
 
 typedef struct { uint32_t nscal, ssz; } kl_shape_t;
 
-static const kl_shape_t k_kl_shapes[] = {
+__attribute__((unused)) static const kl_shape_t k_kl_shapes[] = {
     { 0, 0x40 }, { 1, 0 }, { 0, 0x80 }, { 1, 0x40 },
     { 2, 0 }, { 0, 0x100 }, { 1, 0x80 }, { 2, 0x40 },
     { 3, 0 }, { 4, 0 }, { 0, 0x20 }, { 1, 0x20 },
@@ -393,16 +403,21 @@ void nk_kernel_leak_hunt(void)
             continue;
         }
 
-        /* unknown arity: probe the shape matrix. Bounded: the first four
-         * shapes only, and a yield every 40 calls so the watchdog does not
-         * kill the app. */
+        /* Unknown arity: the shapes that matter are the cheap ones. A
+         * method that hands back an OSObject* answers with a scalar, so
+         * the scalar-only and the one-scalar shapes are tried first, with
+         * a small struct shape after them. A global call cap and a yield
+         * every 40 calls keep the device responsive. */
+        static const kl_shape_t cheap[] = { {0,0}, {1,0}, {0,0x40}, {1,0x40} };
         for (uint32_t sel = 0; sel < KL_MAX_SEL; sel++) {
-            for (size_t si = 0; si < 4 && si < KL_NSHAPES; si++) {
+            for (size_t si = 0; si < sizeof(cheap)/sizeof(cheap[0]); si++) {
+                if (g_kl_calls >= KL_MAX_CALLS) break;
                 char tag[32];
-                snprintf(tag, sizeof(tag), "shape%u", (unsigned)si);
-                kl_call(cn, sel, &k_kl_shapes[si], tag);
+                snprintf(tag, sizeof(tag), "cheap%u", (unsigned)si);
+                kl_call(cn, sel, &cheap[si], tag);
                 if ((g_kl_calls % 40) == 0) usleep(2000);
             }
+            if (g_kl_calls >= KL_MAX_CALLS) break;
         }
         klf("[KL] conn[%u] %s type=%u shape sweep done (calls=%u hits=%u)",
             ci, cn->svc, cn->type, g_kl_calls, g_kl_hits);

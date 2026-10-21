@@ -144,13 +144,19 @@ static int kr_boring(kern_return_t kr)
 #define KL_KERNEL_LO 0xfffffff000000000ULL
 #define KL_KERNEL_HI 0xffffffff00000000ULL
 
+/* PAC-signed kernel pointers: the address is in the low 56 bits, the
+ * authentication code in the top bits. Mask the PAC off before the range
+ * test or every signed pointer is missed. */
+#define KL_PAC_MASK 0x00ffffffffffffffULL
+
 static int kl_is_kernel_va(uint64_t v)
 {
-    if (v < KL_KERNEL_LO || v >= KL_KERNEL_HI) return 0;
+    uint64_t a = v & KL_PAC_MASK;
+    if (a < KL_KERNEL_LO || a >= KL_KERNEL_HI) return 0;
     /* exclude the classic poison / sentinel values */
-    if ((v & 0xffff0000ffff0000ULL) == 0x2bad0000ffff0000ULL) return 0;
-    if (v == 0xffffffffffffffffULL) return 0;
-    if (v == 0xdeadbeefdeadbeefULL) return 0;
+    if ((a & 0xffff0000ffff0000ULL) == 0x2bad0000ffff0000ULL) return 0;
+    if (a == 0xffffffffffffffffULL) return 0;
+    if (a == 0xdeadbeefdeadbeefULL) return 0;
     return 1;
 }
 
