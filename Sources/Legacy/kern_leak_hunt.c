@@ -157,36 +157,32 @@ static const kl_shape_t k_kl_shapes[] = {
  * the HID system, the SEP and the rest. */
 static void kl_registry_sweep(void)
 {
-    /* IOServiceMatching(NULL) matches EVERY service in the IORegistry and
-     * IOServiceGetMatchingServices materialises the whole list - on this
-     * build that froze the phone (tens of thousands of IOKit calls, then
-     * the watchdog killed the app). The iterator API walks the same tree
-     * lazily, so the cost is bounded by how many entries we actually look
-     * at. Hard caps on top of that. */
-    io_iterator_t iter = 0;
-    kern_return_t kr = IORegistryCreateIterator(kIOMasterPortDefault,
-                                                 kIOServicePlane,
-                                                 kIORegistryIterateRecursively |
-                                                 kIORegistryIterateParents,
-                                                 &iter);
-    if (kr != KERN_SUCCESS || !iter) {
-        klf("[KL] registry iterator failed (kr=0x%x)", kr);
+    /* IORegistryCreateIterator + IOIteratorNext returns nothing on iOS
+     * (a registry iterator is not a plain io_iterator_t), so the walk uses
+     * IOServiceGetMatchingServices with a NULL name - which matches every
+     * service - and a plain IOIteratorNext. The cost is bounded by the
+     * caps below, and nothing is logged per service: nk_doc_log fsyncs
+     * every line, and thousands of lines is what made the phone freeze. */
+    CFMutableDictionaryRef m = IOServiceMatching(NULL);
+    if (!m) { klf("[KL] no registry match"); return; }
+    io_iterator_t it = 0;
+    if (IOServiceGetMatchingServices(kIOMasterPortDefault, m, &it) != KERN_SUCCESS) {
+        klf("[KL] registry walk failed");
         return;
     }
-    static const uint32_t reg_types[] = { 0, 1, 2, 33 };
-    io_registry_entry_t ent;
+    static const uint32_t reg_types[] = { 0, 1, 2 };
+    io_service_t svc;
     uint32_t seen = 0, opened = 0, since_yield = 0;
-    while ((ent = (io_registry_entry_t)IOIteratorNext(iter)) != 0) {
+    while ((svc = IOIteratorNext(it))) {
         seen++;
-        if (seen > 400) { IOObjectRelease(ent); break; }
+        if (seen > 250) break;
         char nm[128] = {0};
         io_name_t onm = {0};
-        if (IORegistryEntryGetName(ent, onm) == KERN_SUCCESS) {
+        if (IORegistryEntryGetName(svc, onm) == KERN_SUCCESS)
             strncpy(nm, (const char *)onm, sizeof(nm) - 1);
-        }
         for (size_t t = 0; t < sizeof(reg_types)/sizeof(reg_types[0]); t++) {
             io_connect_t c = MACH_PORT_NULL;
-            if (IOServiceOpen(ent, mach_task_self(), reg_types[t], &c) == KERN_SUCCESS && c) {
+            if (IOServiceOpen(svc, mach_task_self(), reg_types[t], &c) == KERN_SUCCESS && c) {
                 if (g_kl_nconns < KL_MAX_CONN) {
                     g_kl_conns[g_kl_nconns].svc = kl_name_intern(nm[0] ? nm : "?");
                     g_kl_conns[g_kl_nconns].type = reg_types[t];
@@ -201,13 +197,10 @@ static void kl_registry_sweep(void)
                 since_yield++;
             }
         }
-        if (since_yield >= 40) {
-            since_yield = 0;
-            usleep(3000);           /* give the watchdog a slice */
-        }
-        IOObjectRelease(ent);
+        if (since_yield >= 20) { since_yield = 0; usleep(3000); }
+        IOObjectRelease(svc);
     }
-    IOObjectRelease(iter);
+    IOObjectRelease(it);
     klf("[KL] registry walk: services=%u opened=%u", seen, opened);
 }
 
@@ -242,8 +235,12 @@ static void kl_call(kl_conn_t *cn, uint32_t sel, const kl_shape_t *sh,
         kl_scan(cn->svc, cn->type, sel, "struct", shape_tag, sout, outN);
         kl_scan(cn->svc, cn->type, sel, "scalar", shape_tag, (const uint8_t *)out_scal, 32);
     } else if (!kl_kr_boring(kr)) {
-        /* an answer other than bad-argument: this selector is live */
-        klf("[KL] LIVE %s type=%u sel=%u shape=%s kr=0x%x", cn->svc, cn->type, sel, shape_tag, kr);
+        /* an answer other than bad-argument: this selector is live. Capped:
+         * every line is an fsync and thousands of them stall the device. */
+        static uint32_t live_lines;
+        if (live_lines < 40)
+            klf("[KL] LIVE %s type=%u sel=%u shape=%s kr=0x%x", cn->svc, cn->type, sel, shape_tag, kr);
+        live_lines++;
     }
 }
 

