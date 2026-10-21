@@ -127,6 +127,17 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* Remove-path trigger: the slot table mask is decremented on every
+       removal, so a removal after a capacity-64 group turns the mask into
+       0xffffffff and the next insert walks out of the bitmap.
+       Durable log: Documents/group_oob.log */
+    func groupOobRemove() {
+        start {
+            nk_iogpu_group_oob_run(3)
+            return true
+        }
+    }
+
     /* Kernel leak hunt: find a user client that returns a kernel address.
        Durable log: Documents/kern_leak.log */
     func kernLeakHunt() {

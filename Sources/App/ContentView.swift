@@ -78,6 +78,13 @@ struct ContentView: View {
                             Label(state.t("Group OOB (cmd64 cap=1)", "Group OOB (cmd64 cap=1)"), systemImage: "flame")
                         }
                         .disabled(state.running)
+
+                        Button {
+                            state.groupOobRemove()
+                        } label: {
+                            Label(state.t("Group OOB (remove path)", "Group OOB (путь удаления)"), systemImage: "eraser")
+                        }
+                        .disabled(state.running)
                     }
 
                     VStack(spacing: 8) {

