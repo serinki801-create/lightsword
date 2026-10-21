@@ -61,19 +61,13 @@ struct ContentView: View {
                         Button {
                             state.groupOob(false)
                         } label: {
-                            Label(state.t("OOB: dup-add trigger", "OOB: дубль-insert (зажиг)"), systemImage: "bolt.fill")
+                            Label(state.t("OOB trigger (dup-add + index sweep)", "OOB триггер (дубль + свип индекса)"), systemImage: "bolt.fill")
                         }
                         .disabled(state.running)
 
 
 
 
-                        Button {
-                            state.groupOobDup()
-                        } label: {
-                            Label(state.t("OOB: index sweep", "OOB: свип индекса"), systemImage: "square.on.square")
-                        }
-                        .disabled(state.running)
                     }
 
                     VStack(spacing: 8) {

