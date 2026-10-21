@@ -211,8 +211,28 @@ void nk_doc_log_open(const char *name)
                 char msg[600];
                 snprintf(msg, sizeof(msg), "[DOCLOG] %s -> %s (fd %d)\n",
                          name, g_doclogs[i].path, g_doclogs[i].fd);
+                /* Show the absolute path in the UI log too: after a kernel
+                 * panic the device reboots and the only way back to the
+                 * evidence is knowing exactly which file to open. */
+                trace_log("[DOCLOG] %s -> %s", name, g_doclogs[i].path);
                 /* write to trace.log directly */
                 if (g_fd < 0) trace_open();
+                /* keep an index of the durable logs in Documents/ so that
+                 * after a reboot one file tells the whole story */
+                {
+                    char idx[512];
+                    snprintf(idx, sizeof(idx), "%s/Documents/LOGS.txt", homes[hi]);
+                    int ifd = open(idx, O_WRONLY | O_CREAT | O_APPEND, 0644);
+                    if (ifd >= 0) {
+                        char line[700];
+                        int n = snprintf(line, sizeof(line),
+                                         "[%02d:%02d:%02d] %s -> %s\n",
+                                         t.tm_hour, t.tm_min, t.tm_sec, name,
+                                         g_doclogs[i].path);
+                        if (n > 0) { (void)write(ifd, line, (size_t)n); fsync(ifd); }
+                        close(ifd);
+                    }
+                }
                 if (g_fd >= 0) { write(g_fd, msg, strlen(msg)); fsync(g_fd); }
                 break;
             }

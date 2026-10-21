@@ -366,7 +366,16 @@ int nk_aio_uaf_b12(int attempts, nk_aio_stat_t *stat_out)
 int nk_aio_uaf_run(int attempts)
 {
     nk_doc_log_open(AIO_LOG_FILE);
-    nk_log("[AIO-B12] durable log: Documents/%s", AIO_LOG_FILE);
+    {
+        /* the absolute path, so the log can be found after a kernel panic
+         * reboots the device */
+        char p[512];
+        if (nk_doc_log_path(AIO_LOG_FILE, p, sizeof(p)) == 0)
+            nk_log("[AIO-B12] durable log: %s", p);
+        else
+            nk_log("[AIO-B12] durable log: Documents/%s", AIO_LOG_FILE);
+        aio_logx("B1", "START attempts=%d durable_log=%s", attempts, p);
+    }
     nk_aio_stat_t st;
     memset(&st, 0, sizeof(st));
     int rc = nk_aio_uaf_b12(attempts, &st);
