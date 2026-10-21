@@ -137,7 +137,13 @@ static const char *docs_dir(void)
            sandbox rejects it silently, so a log written there is invisible. */
         for (int ci = 0; ci < n; ci++) {
             char tmp[512];
-            snprintf(tmp, sizeof(tmp), "%s/Documents", cands[ci]);
+            /* a candidate that already ends in /Documents IS the documents
+             * dir - do not append another one */
+            size_t cl = strlen(cands[ci]);
+            if (cl >= 9 && !strcmp(cands[ci] + cl - 9, "/Documents"))
+                snprintf(tmp, sizeof(tmp), "%s", cands[ci]);
+            else
+                snprintf(tmp, sizeof(tmp), "%s/Documents", cands[ci]);
             ensure_dir(tmp);
             /* probe: try to create a test file */
             char test[600];
@@ -152,8 +158,14 @@ static const char *docs_dir(void)
             }
         }
         /* fallback */
-        snprintf(dir, sizeof(dir), "%s/Documents", nk_home_dir());
-        ensure_dir(dir);
+        {
+            size_t hl = strlen(nk_home_dir());
+            if (hl >= 9 && !strcmp(nk_home_dir() + hl - 9, "/Documents"))
+                snprintf(dir, sizeof(dir), "%s", nk_home_dir());
+            else
+                snprintf(dir, sizeof(dir), "%s/Documents", nk_home_dir());
+            ensure_dir(dir);
+        }
     }
     return dir;
 }
@@ -185,7 +197,12 @@ void nk_doc_log_open(const char *name)
         /* /tmp excluded: the LC guest sandbox rejects it silently. */
         for (int hi = 0; hi < nh; hi++) {
             char docs[512];
-            snprintf(docs, sizeof(docs), "%s/Documents", homes[hi]);
+            /* a home that already ends in /Documents IS the documents dir */
+            size_t hl2 = strlen(homes[hi]);
+            if (hl2 >= 9 && !strcmp(homes[hi] + hl2 - 9, "/Documents"))
+                snprintf(docs, sizeof(docs), "%s", homes[hi]);
+            else
+                snprintf(docs, sizeof(docs), "%s/Documents", homes[hi]);
             /* mkdir -p */
             char tmp[512];
             snprintf(tmp, sizeof(tmp), "%s", docs);

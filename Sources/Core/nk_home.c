@@ -27,9 +27,22 @@ const char *nk_home_dir(void)
     return g_home[0] ? g_home : "/var/mobile";
 }
 
+/* The Documents directory of the app, resolved so that the file ends up
+ * where the user actually looks. NSHomeDirectory() in the LiveContainer
+ * guest already points AT a Documents directory (in the guest it is
+ * nested: .../Application/<A>/Documents/Data/Application/<B>), so blindly
+ * appending "/Documents" put every log one level too deep, where it was
+ * invisible in the Files app. If the home path already ends in
+ * /Documents it is used as-is; otherwise /Documents is appended. */
 void nk_home_documents(char *out, size_t cap)
 {
-    snprintf(out, cap, "%s/Documents", nk_home_dir());
+    const char *h = nk_home_dir();
+    size_t n = strlen(h);
+    if (n >= 9 && !strcmp(h + n - 9, "/Documents")) {
+        snprintf(out, cap, "%s", h);
+    } else {
+        snprintf(out, cap, "%s/Documents", h);
+    }
     mkdir(out, 0755);
 }
 
