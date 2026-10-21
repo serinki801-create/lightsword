@@ -170,6 +170,44 @@ static const char *docs_dir(void)
     return dir;
 }
 
+
+/* Copy every durable log into another directory.
+ *
+ * The C side and the Swift side can see different containers: in the
+ * LiveContainer guest the C home is remapped, so a file written by the
+ * probe lands in a place the Files app does not show. The Swift side
+ * knows the real Documents directory, so it uses this to pull the guest's
+ * logs over. Called at launch as well as after a run, because a kernel
+ * panic reboots the device and the next launch is what collects the
+ * evidence of the crashed run.
+ *
+ * Returns the number of files copied. */
+int nk_doc_log_export(const char *dest_dir)
+{
+    if (!dest_dir || !dest_dir[0]) return 0;
+    int copied = 0;
+    for (int i = 0; i < DOCLOG_MAX; i++) {
+        if (g_doclogs[i].fd < 0 || !g_doclogs[i].path[0]) continue;
+        int in = open(g_doclogs[i].path, O_RDONLY);
+        if (in < 0) continue;
+        char out_path[600];
+        snprintf(out_path, sizeof(out_path), "%s/%s", dest_dir, g_doclogs[i].name);
+        int out = open(out_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (out < 0) { close(in); continue; }
+        char buf[8192];
+        ssize_t n;
+        while ((n = read(in, buf, sizeof(buf))) > 0) {
+            ssize_t w = write(out, buf, (size_t)n);
+            if (w <= 0) break;
+        }
+        fsync(out);
+        close(out);
+        close(in);
+        copied++;
+    }
+    return copied;
+}
+
 void nk_doc_log_open(const char *name)
 {
     if (!name || !name[0]) return;

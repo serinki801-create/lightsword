@@ -32,6 +32,13 @@ struct NatsukApp: App {
                      * is not guessable from inside the app. */
                     nk_doc_log_open("srk801.log")
                     nk_doc_log_open("oob64.log")
+                    /* Open every known probe log so the export below can pull
+                       all of them over - including the ones left behind by a
+                       run that crashed the kernel. */
+                    for nm in ["aio_uaf.log", "group_oob.log", "kern_leak.log",
+                               "cap_matrix.log", "necp_chain.log", "LOGS.txt"] {
+                        nk_doc_log_open(nm)
+                    }
                     /* Diagnostic: write a marker file to every candidate home
                        so we can see which path is actually writable. */
                     for nm in ["srk801.log", "oob64.log", "aio_uaf.log"] {
@@ -64,6 +71,17 @@ struct NatsukApp: App {
                         AppState.shared.append("IDX: \(idxPath)")
                     } else {
                         AppState.shared.append("NO DOCUMENTS DIR")
+                    }
+                    /* Pull the guest's durable logs into the real Documents
+                       directory, which is the one the Files app shows. This
+                       also runs on the launch AFTER a kernel panic, so the
+                       evidence of the crashed run is collected. */
+                    if let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                        try? FileManager.default.createDirectory(at: docsURL, withIntermediateDirectories: true)
+                        let n = docsURL.withUnsafeFileSystemRepresentation { p in
+                            nk_doc_log_export(p!)
+                        }
+                        AppState.shared.append("EXPORTED \(n) logs -> \(docsURL.path)")
                     }
                     var lp = [CChar](repeating: 0, count: 1024)
                     for nm in ["srk801.log", "oob64.log", "trace.log"] {

