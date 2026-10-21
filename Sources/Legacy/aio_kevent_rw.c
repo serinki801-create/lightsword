@@ -122,9 +122,16 @@ static void reap_cb2(void)
     aio_return(&s_cb2);
 }
 
+/* A PAC-signed kernel pointer keeps the address in the low 56 bits and
+ * puts the authentication code in the top bits, so the raw value would
+ * fail a (v >> 48) == 0xFFFF test. Mask the PAC off first. */
 static int is_kernel_va(uint64_t v)
 {
-    return (v >> 48) == 0xFFFFULL;
+    uint64_t a = v & 0x00ffffffffffffffULL;
+    if ((a >> 48) == 0xFFFFULL) return 1;
+    /* also accept the kernel heap range, whose top bits differ */
+    if ((a >> 40) == 0xFFFFF) return 1;
+    return 0;
 }
 
 static void report_kev(const struct kevent64_s *kev, int attempt)

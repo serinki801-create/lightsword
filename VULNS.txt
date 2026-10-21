@@ -1156,6 +1156,35 @@ IOKit-метод, возвращающий OSObject*, отдаёт PAC-подп�
   следовательно, смещение записи. Какой именно ключ IOSurface попадает
   в resource+0x70 - надо найти перебором (краш как оракул).
 
+
+8.23 AIO KEVENT UAF - КНОПКА В UI ОТСУТСТВОВАЛА
+
+Ты прав: в проекте уже есть готовый примитив (Sources/Legacy/aio_kevent_rw.c),
+и он даёт чтение из ядра. Но кнопки в UI не было - state.aioUaf() existed
+и никогда не вызывался. Теперь кнопка "AIO kevent UAF (утечка ядра)".
+
+Как работает (Track B / B12):
+  T0 main:  lio_listio -> enqueue aio_workq_entry E1
+  T0 main:  aio_register_kevent -> knote_kn_hook_set_raw(kn, E1)  [без ref]
+  T1 racer: aio_error(E1)==0 -> aio_return(E1)   [FREE]
+  T1 racer: aio_read(cb2) на том же CPU           [RECLAIM того же слота, LIFO]
+  T2 kernel: do_aio_completion_and_unlock -> KNOTE(hint=1)
+  T3 main:  kevent64 -> filt_aioprocess по dangling-указателю:
+            ext[0]=entry+0x28 (errorval), ext[1]=entry+0x20 (returnval)
+  HIT: kevent доставлен на reclaimed entry, ext[1] == наш маркер.
+  Ядро копирует байты reclaimed-записи НАРУЖУ - это управляемый канал
+  утечки. Значит: если в слот положить kernel-объект, его байты утекут
+  в userspace.
+
+Починен детектор kernel VA: (v>>48)==0xFFFF не срабатывал на
+PAC-подписанных указателях (адрес в младших 56 битах, PAC в старших) ->
+маска 0x00ffffffffffffff + дополнительный диапазон (v>>40)==0xFFFFF.
+Попыток 300 (было 50).
+
+ПОПутно: в первом Section было 11 детей - SwiftUI ViewBuilder держит
+максимум 10, 11-й давал "extra argument in call" на NavigationLink.
+Хвост обёрнут в общий VStack.
+
 ================================================================================
  4. ПРИОРИТЕТ (обновлено 2026-10-20 21:05, AIO отложен по решению dj)
 ================================================================================

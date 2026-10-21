@@ -35,6 +35,7 @@ struct ContentView: View {
                     .disabled(state.running)
 
                     VStack(spacing: 8) {
+                    VStack(spacing: 8) {
                         Button {
                             state.fuzz2()
                         } label: {
@@ -53,6 +54,15 @@ struct ContentView: View {
                             state.oobHunt()
                         } label: {
                             Label(state.t("OOB Hunt", "OOB Hunt"), systemImage: "scope")
+                        }
+                        .disabled(state.running)
+                    }
+
+                    VStack(spacing: 8) {
+                        Button {
+                            state.aioUaf()
+                        } label: {
+                            Label(state.t("AIO kevent UAF (kernel leak)", "AIO kevent UAF (утечка ядра)"), systemImage: "flame.circle")
                         }
                         .disabled(state.running)
                     }
@@ -106,10 +116,11 @@ struct ContentView: View {
                         .disabled(state.running)
                     }
 
-                    NavigationLink {
+                    NavigationLink(destination: {
                         WebKitStageView()
-                    } label: {
+                    }, label: {
                         Label(state.t("WebKit pivot", "WebKit пивот"), systemImage: "safari")
+                    })
                     }
 
                 } header: {

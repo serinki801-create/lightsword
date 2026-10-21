@@ -198,7 +198,7 @@ final class AppState: ObservableObject {
        Durable log: Documents/aio_uaf.log */
     func aioUaf() {
         start {
-            _ = nk_aio_uaf_run(50)
+            _ = nk_aio_uaf_run(300)
             return true
         }
     }
