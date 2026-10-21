@@ -27,37 +27,6 @@ struct ContentView: View {
                     }
                     .disabled(state.running)
 
-                    Button {
-                        state.chain()
-                    } label: {
-                        Label(state.t("Chain", "Цепочка"), systemImage: "link")
-                    }
-                    .disabled(state.running)
-
-                    VStack(spacing: 8) {
-                    VStack(spacing: 8) {
-                        Button {
-                            state.fuzz2()
-                        } label: {
-                            Label(state.t("Fuzz v2 map", "Фазз v2 карта"), systemImage: "square.grid.2x2")
-                        }
-                        .disabled(state.running)
-
-                        Button {
-                            state.iogpuOob64()
-                        } label: {
-                            Label(state.t("IOGPU sel64", "IOGPU sel64"), systemImage: "target")
-                        }
-                        .disabled(state.running)
-
-                        Button {
-                            state.oobHunt()
-                        } label: {
-                            Label(state.t("OOB Hunt", "OOB Hunt"), systemImage: "scope")
-                        }
-                        .disabled(state.running)
-                    }
-
                     VStack(spacing: 8) {
                         Button {
                             state.aioUaf()
@@ -67,67 +36,19 @@ struct ContentView: View {
                         .disabled(state.running)
                     }
 
-                    VStack(spacing: 8) {
-                        Button {
-                            state.groupOob(false)
-                        } label: {
-                            Label(state.t("OOB trigger (dup-add + index sweep)", "OOB триггер (дубль + свип индекса)"), systemImage: "bolt.fill")
-                        }
-                        .disabled(state.running)
-
-
-
-
-                    }
-
-                    VStack(spacing: 8) {
-                        Button {
-                            state.kernMap()
-                        } label: {
-                            Label(state.t("Kernel map (leak -> mapping)", "Kernel map (утечка -> отображение)"), systemImage: "map")
-                        }
-                        .disabled(state.running)
-                    }
-
-                    VStack(spacing: 8) {
-                        Button {
-                            state.kernLeakHunt()
-                        } label: {
-                            Label(state.t("Kernel leak hunt", "Охота за утечкой ядра"), systemImage: "eye.trianglebadge.exclamationmark")
-                        }
-                        .disabled(state.running)
-                    }
-
-                    VStack(spacing: 8) {
-                        Button {
-                            state.necpChain()
-                        } label: {
-                            Label(state.t("NECP chain (read)", "NECP цепочка (чтение)"), systemImage: "antenna.radiowaves.left.and.right")
-                        }
-                        .disabled(state.running)
-                    }
-
-                    VStack(spacing: 8) {
-                        Button {
-                            state.capMatrix()
-                        } label: {
-                            Label(state.t("Capacity matrix", "Матрица capacity"), systemImage: "tablecells")
-                        }
-                        .disabled(state.running)
-                    }
-
                     NavigationLink(destination: {
                         WebKitStageView()
                     }, label: {
                         Label(state.t("WebKit pivot", "WebKit пивот"), systemImage: "safari")
                     })
-                    }
 
                 } header: {
                     Label(state.t("Actions", "Действия"), systemImage: "play.circle")
                 } footer: {
-                    Text(state.t("**Slide Only** — KASLR detection. **Fuzz batch** — registry/proc_info/IPC/mach-leak surface hunts.",
-                                 "**Только слайд** — определение KASLR. **Фазз-прогон** — поверхности: registry / proc_info / IPC / mach-leak."))
+                    Text(state.t("**Slide Only** — KASLR detection. **Run Exploit** — the full chain. **AIO kevent UAF** — the live 23C55 bug: a reclaimed aio_workq_entry read back through kevent64, plus the double free behind it. **WebKit pivot** — the renderer stage.",
+                         "**Только слайд** — определение KASLR. **Запустить эксплойт** — полная цепочка. **AIO kevent UAF** — живой баг 23C55: освобождённая aio_workq_entry читается обратно через kevent64, и double-free за ним. **WebKit пивот** — стадия рендера."))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section {
