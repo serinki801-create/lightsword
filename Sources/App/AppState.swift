@@ -117,6 +117,15 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* Kernel leak hunt: find a user client that returns a kernel address.
+       Durable log: Documents/kern_leak.log */
+    func kernLeakHunt() {
+        start {
+            nk_kernel_leak_hunt()
+            return true
+        }
+    }
+
     /* NECP data-only chain: the only kernel read/write channel on 23.55.
        Durable log: Documents/necp_chain.log */
     func necpChain() {

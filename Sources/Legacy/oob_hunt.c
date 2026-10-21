@@ -130,6 +130,49 @@ static int kr_boring(kern_return_t kr)
            kr == (kern_return_t)0xe00002c0 || kr == (kern_return_t)0xe00002e3;
 }
 
+
+/* ------------------------------------------------------------------ */
+/* KERNEL POINTER LEAK DETECTOR                                         */
+/*                                                                       */
+/* A user client that hands back a kernel virtual address is a kernel   */
+/* read primitive in one step: the value is a KASLR anchor, and the     */
+/* pointer itself can be dereferenced through whatever leaks it.        */
+/* On iOS the kernel lives in the top 36 bits: text ~0xfffffff00a...... */
+/* and the kalloc heap ~0xfffffff2........                             */
+/* Anything with (v >> 32) in 0xfffffff0..0xfffffff3 is a kernel VA.   */
+/* ------------------------------------------------------------------ */
+#define KL_KERNEL_LO 0xfffffff000000000ULL
+#define KL_KERNEL_HI 0xffffffff00000000ULL
+
+static int kl_is_kernel_va(uint64_t v)
+{
+    if (v < KL_KERNEL_LO || v >= KL_KERNEL_HI) return 0;
+    /* exclude the classic poison / sentinel values */
+    if ((v & 0xffff0000ffff0000ULL) == 0x2bad0000ffff0000ULL) return 0;
+    if (v == 0xffffffffffffffffULL) return 0;
+    if (v == 0xdeadbeefdeadbeefULL) return 0;
+    return 1;
+}
+
+static uint32_t g_kl_hits;
+
+static void kl_scan(conn_t *cn, uint32_t sel, uint32_t ssz, uint32_t soff,
+                    uint64_t sval, const uint8_t *buf, size_t n, const char *kind)
+{
+    for (size_t off = 0; off + 8 <= n; off += 8) {
+        uint64_t v = 0;
+        memcpy(&v, buf + off, 8);
+        if (!kl_is_kernel_va(v)) continue;
+        g_kl_hits++;
+        nk_doc_log("kern_leak.log",
+                   "[KL] %s type=%u sel=%u sz=0x%x soff=0x%x sval=0x%016llx kind=%s out_off=0x%zx VALUE=0x%016llx",
+                   cn->svc, cn->type, sel, ssz, soff, (unsigned long long)sval,
+                   kind, off, (unsigned long long)v);
+        nk_log("[KL] %s type=%u sel=%u out_off=0x%zx VALUE=0x%016llx",
+               cn->svc, cn->type, sel, off, (unsigned long long)v);
+    }
+}
+
 static void one_call(conn_t *cn, uint32_t sel, uint32_t ssz,
                      const uint64_t *scalars, uint32_t nscal,
                      uint32_t soff, uint64_t sval, uint32_t voff, uint64_t vval)
@@ -161,6 +204,11 @@ static void one_call(conn_t *cn, uint32_t sel, uint32_t ssz,
         out_scal, (void *)(uintptr_t)4,
         sout, &outN);
     g_calls++;
+    /* KERNEL LEAK SCAN: any kernel VA in the output is a read primitive */
+    if (kr == KERN_SUCCESS) {
+        kl_scan(cn, sel, ssz, soff, sval, sout, outN, "struct");
+        kl_scan(cn, sel, ssz, soff, sval, (const uint8_t *)out_scal, 32, "scalar");
+    }
     if (!kr_boring(kr)) {
         ofile("[hunt] NONSTD %s type=%u sel=%u sz=0x%x soff=0x%x sval=0x%016llx kr=0x%x",
               cn->svc, cn->type, sel, ssz, soff, (unsigned long long)sval, kr);

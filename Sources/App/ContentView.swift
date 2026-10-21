@@ -75,6 +75,15 @@ struct ContentView: View {
 
                     VStack(spacing: 8) {
                         Button {
+                            state.kernLeakHunt()
+                        } label: {
+                            Label(state.t("Kernel leak hunt", "Охота за утечкой ядра"), systemImage: "eye.trianglebadge.exclamationmark")
+                        }
+                        .disabled(state.running)
+                    }
+
+                    VStack(spacing: 8) {
+                        Button {
                             state.necpChain()
                         } label: {
                             Label(state.t("NECP chain (read)", "NECP цепочка (чтение)"), systemImage: "antenna.radiowaves.left.and.right")
