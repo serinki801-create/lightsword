@@ -143,7 +143,7 @@ final class AppState: ObservableObject {
        Documents/group_oob.log */
     func groupOobDup() {
         start {
-            nk_iogpu_group_oob_run(4)
+            nk_iogpu_group_oob_run(5)
             return true
         }
     }
