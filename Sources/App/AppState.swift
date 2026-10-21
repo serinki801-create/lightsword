@@ -117,6 +117,15 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* NECP data-only chain: the only kernel read/write channel on 23.55.
+       Durable log: Documents/necp_chain.log */
+    func necpChain() {
+        start {
+            nk_dataonly_necp_chain()
+            return true
+        }
+    }
+
     /* Capacity matrix: which struct field is the real capacity and what
        gates it. Durable log: Documents/cap_matrix.log */
     func capMatrix() {

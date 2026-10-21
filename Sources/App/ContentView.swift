@@ -75,6 +75,15 @@ struct ContentView: View {
 
                     VStack(spacing: 8) {
                         Button {
+                            state.necpChain()
+                        } label: {
+                            Label(state.t("NECP chain (read)", "NECP цепочка (чтение)"), systemImage: "antenna.radiowaves.left.and.right")
+                        }
+                        .disabled(state.running)
+                    }
+
+                    VStack(spacing: 8) {
+                        Button {
                             state.capMatrix()
                         } label: {
                             Label(state.t("Capacity matrix", "Матрица capacity"), systemImage: "tablecells")

