@@ -157,41 +157,60 @@ static const kl_shape_t k_kl_shapes[] = {
  * the HID system, the SEP and the rest. */
 static void kl_registry_sweep(void)
 {
-    CFMutableDictionaryRef m = IOServiceMatching(NULL);
-    if (!m) { klf("[KL] no registry match"); return; }
-    io_iterator_t it = 0;
-    if (IOServiceGetMatchingServices(kIOMasterPortDefault, m, &it) != KERN_SUCCESS) {
-        klf("[KL] registry walk failed");
+    /* IOServiceMatching(NULL) matches EVERY service in the IORegistry and
+     * IOServiceGetMatchingServices materialises the whole list - on this
+     * build that froze the phone (tens of thousands of IOKit calls, then
+     * the watchdog killed the app). The iterator API walks the same tree
+     * lazily, so the cost is bounded by how many entries we actually look
+     * at. Hard caps on top of that. */
+    io_iterator_t iter = 0;
+    kern_return_t kr = IORegistryCreateIterator(kIOMasterPortDefault,
+                                                 kIOServicePlane,
+                                                 kIORegistryIterateRecursively |
+                                                 kIORegistryIterateParents,
+                                                 &iter);
+    if (kr != KERN_SUCCESS || !iter) {
+        klf("[KL] registry iterator failed (kr=0x%x)", kr);
         return;
     }
-    io_service_t svc;
-    uint32_t seen = 0, opened = 0;
-    while ((svc = IOIteratorNext(it))) {
+    static const uint32_t reg_types[] = { 0, 1, 2, 33 };
+    io_registry_entry_t ent;
+    uint32_t seen = 0, opened = 0, since_yield = 0;
+    while ((ent = (io_registry_entry_t)IOIteratorNext(iter)) != 0) {
         seen++;
+        if (seen > 400) { IOObjectRelease(ent); break; }
         char nm[128] = {0};
         io_name_t onm = {0};
-        if (IORegistryEntryGetName(svc, onm) == KERN_SUCCESS) {
+        if (IORegistryEntryGetName(ent, onm) == KERN_SUCCESS) {
             strncpy(nm, (const char *)onm, sizeof(nm) - 1);
         }
-        for (size_t t = 0; t < sizeof(k_kl_types)/sizeof(k_kl_types[0]); t++) {
+        for (size_t t = 0; t < sizeof(reg_types)/sizeof(reg_types[0]); t++) {
             io_connect_t c = MACH_PORT_NULL;
-            if (IOServiceOpen(svc, mach_task_self(), k_kl_types[t], &c) == KERN_SUCCESS && c) {
+            if (IOServiceOpen(ent, mach_task_self(), reg_types[t], &c) == KERN_SUCCESS && c) {
                 if (g_kl_nconns < KL_MAX_CONN) {
                     g_kl_conns[g_kl_nconns].svc = kl_name_intern(nm[0] ? nm : "?");
-                    g_kl_conns[g_kl_nconns].type = k_kl_types[t];
+                    g_kl_conns[g_kl_nconns].type = reg_types[t];
                     g_kl_conns[g_kl_nconns].conn = c;
-                    klf("[KL] REG OPEN %s type=%u conn[%u]", g_kl_conns[g_kl_nconns].svc,
-                        k_kl_types[t], g_kl_nconns);
+                    klf("[KL] REG OPEN %s type=%u conn[%u]",
+                        g_kl_conns[g_kl_nconns].svc, reg_types[t], g_kl_nconns);
                     g_kl_nconns++;
                     opened++;
                 } else {
                     IOServiceClose(c);
                 }
+                since_yield++;
             }
         }
+        if (since_yield >= 40) {
+            since_yield = 0;
+            usleep(3000);           /* give the watchdog a slice */
+        }
+        IOObjectRelease(ent);
     }
+    IOObjectRelease(iter);
     klf("[KL] registry walk: services=%u opened=%u", seen, opened);
 }
+
 static void kl_call(kl_conn_t *cn, uint32_t sel, const kl_shape_t *sh,
                     const char *shape_tag)
 {
@@ -377,12 +396,15 @@ void nk_kernel_leak_hunt(void)
             continue;
         }
 
-        /* unknown arity: probe the shape matrix, keep the shape that answers */
+        /* unknown arity: probe the shape matrix. Bounded: the first four
+         * shapes only, and a yield every 40 calls so the watchdog does not
+         * kill the app. */
         for (uint32_t sel = 0; sel < KL_MAX_SEL; sel++) {
-            for (size_t si = 0; si < KL_NSHAPES; si++) {
+            for (size_t si = 0; si < 4 && si < KL_NSHAPES; si++) {
                 char tag[32];
                 snprintf(tag, sizeof(tag), "shape%u", (unsigned)si);
                 kl_call(cn, sel, &k_kl_shapes[si], tag);
+                if ((g_kl_calls % 40) == 0) usleep(2000);
             }
         }
         klf("[KL] conn[%u] %s type=%u shape sweep done (calls=%u hits=%u)",

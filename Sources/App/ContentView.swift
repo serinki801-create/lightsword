@@ -61,35 +61,35 @@ struct ContentView: View {
                         Button {
                             state.groupOob(false)
                         } label: {
-                            Label(state.t("Group OOB (read)", "Group OOB (проверка)"), systemImage: "eye")
+                            Label(state.t("0. Group check (read)", "0. Проверка (read)"), systemImage: "eye")
                         }
                         .disabled(state.running)
 
                         Button {
                             state.groupOob(true)
                         } label: {
-                            Label(state.t("Group OOB (trigger)", "Group OOB (триггер)"), systemImage: "bolt.trianglebadge.exclamationmark")
+                            Label(state.t("5. Group OOB (old trigger)", "5. Group OOB (старый триггер)"), systemImage: "bolt.trianglebadge.exclamationmark")
                         }
                         .disabled(state.running)
 
                         Button {
                             state.groupOob64()
                         } label: {
-                            Label(state.t("Group OOB (cmd64 cap=1)", "Group OOB (cmd64 cap=1)"), systemImage: "flame")
+                            Label(state.t("3. Group OOB (cmd64 cap=1)", "3. Group OOB (cmd64 cap=1)"), systemImage: "flame")
                         }
                         .disabled(state.running)
 
                         Button {
                             state.groupOobRemove()
                         } label: {
-                            Label(state.t("Group OOB (remove path)", "Group OOB (путь удаления)"), systemImage: "eraser")
+                            Label(state.t("4. Group OOB (remove path)", "4. Group OOB (путь удаления)"), systemImage: "eraser")
                         }
                         .disabled(state.running)
 
                         Button {
                             state.groupOobDup()
                         } label: {
-                            Label(state.t("Group OOB (dup add)", "Group OOB (дубль-insert)"), systemImage: "square.on.square")
+                            Label(state.t("1. Group OOB (dup add)", "1. Group OOB (дубль-insert)"), systemImage: "square.on.square")
                         }
                         .disabled(state.running)
                     }
@@ -98,7 +98,7 @@ struct ContentView: View {
                         Button {
                             state.kernLeakHunt()
                         } label: {
-                            Label(state.t("Kernel leak hunt", "Охота за утечкой ядра"), systemImage: "eye.trianglebadge.exclamationmark")
+                            Label(state.t("2. Kernel leak hunt", "2. Охота за утечкой ядра"), systemImage: "eye.trianglebadge.exclamationmark")
                         }
                         .disabled(state.running)
                     }
@@ -107,7 +107,7 @@ struct ContentView: View {
                         Button {
                             state.necpChain()
                         } label: {
-                            Label(state.t("NECP chain (read)", "NECP цепочка (чтение)"), systemImage: "antenna.radiowaves.left.and.right")
+                            Label(state.t("6. NECP chain (read)", "6. NECP цепочка (чтение)"), systemImage: "antenna.radiowaves.left.and.right")
                         }
                         .disabled(state.running)
                     }
