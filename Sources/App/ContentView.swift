@@ -47,6 +47,15 @@ struct ContentView: View {
 
                     VStack(spacing: 8) {
                         Button {
+                            state.groupOobRead()
+                        } label: {
+                            Label(state.t("Kernel read-out probe", "Проба выгрузки из ядра"), systemImage: "arrow.down.doc")
+                        }
+                        .disabled(state.running)
+                    }
+
+                    VStack(spacing: 8) {
+                        Button {
                             state.aioUaf()
                         } label: {
                             Label(state.t("AIO kevent UAF (kernel leak)", "AIO kevent UAF (утечка ядра)"), systemImage: "flame.circle")

