@@ -2097,6 +2097,27 @@ load-команд шла шагом sizeof(segment_command_64) вместо lc->
 (у LC_SYMTAB размер другой), т.е. список команд разъезжался. Исправлено
 в двух местах.
 
+
+8.29 ЦЕПОЧКА: RENDERER AAR/AAW + IOGPU OOB WRITE = KERNEL R/W
+
+dj прав: связка работает, и она не требует kernel pointer из рендера.
+Рендер уже имеет произвольное чтение/запись (ECHO gate OK). IOGPU OOB
+write даёт 8 нулевых байт по управляемому смещению. Вместе:
+
+  1) рендер читает своё адресное пространство -> находит kernel pointer
+     (Mach-порты, IPC-буферы, IOSurface backing store);
+  2) рендер отправляет адрес в приложение (bridge: "KPTR 0x...");
+  3) приложение делает IOGPU OOB write (8 нулей, смещение рулится
+     геометрией IOSurface);
+  4) рендер читает результат -> верификация.
+
+Реализовано:
+  - Sources/Legacy/webkit_iogpu_bridge.c: nk_bridge_note_kptr,
+    nk_bridge_last_kptr, nk_bridge_oob_trigger, nk_bridge_log;
+  - UIBridge.swift: case "KPTR" -> nk_bridge_note_kptr + лог;
+  - exploit.js: отправляет каждый backend kptr hit через
+    window.webkit.messageHandlers.nkBridge.postMessage("KPTR " + addr).
+
 ================================================================================
  4. ПРИОРИТЕТ (обновлено 2026-10-20 21:05, AIO отложен по решению dj)
 ================================================================================

@@ -126,6 +126,13 @@ final class NKScriptMessageHandler: NSObject, WKScriptMessageHandler {
             message.webView?.evaluateJavaScript("window.__wt3Dead=[]")
         case "STATUS":
             nk_jsbridge_status(payload.msg)
+        case "KPTR":
+            /* kernel pointer from the renderer: store it and feed it to the
+               IOGPU OOB write target */
+            if let v = UInt64(payload.msg, radix: 16) {
+                nk_bridge_note_kptr(payload.msg)
+                AppState.shared.append("[BRIDGE] kptr=0x" + String(v, radix: 16))
+            }
         default:
             /* durable line first (fsync'd), then the coalesced UI tail */
             nk_jsbridge_log(payload.tag, payload.msg)
