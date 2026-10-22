@@ -2309,3 +2309,40 @@ escape)", лог Documents/mha.log:
 КНОПКИ: оставлена одна атакующая ("MHA attack") + WebKit пивот + служебные
 (run/slideOnly) убраны из UI.
 
+8.67 ПРОГОН MHA 16:19: БИБЛИОТЕКА ЕСТЬ, ПУТЬ CLASS-13 ВЕРНЫЙ, ТОКЕНА НЕТ
+
+  [MHA] all symbols resolved                       <- libsystem_containermanager
+                                                         и все функции на месте
+  [MHA] victim=com.apple.mobilenotes -> NO RESULT
+  [MHA] class13 -> path=/private/var/containers/Shared/SystemGroup/
+                  systemgroup.com.apple.mobilegestaltcache/Library/Caches
+  [MHA]   token=none
+  [MHA]   MG plist writable before=0 after=0 activated=1
+
+ЧТО ЭТО ЗНАЧИТ:
+  - запрос к MCM ИДЁТ (class 13 вернул путь, совпадающий с ожидаемым из PoC
+    байт-в-байт) => канал к containermanagerd работает, наш подписанный
+    клиент MCM принимает;
+  - token=none => MCM не выписал sandbox extension => авторизация по
+    identifier'у не прошла (либо жертва/объект не тот);
+  - class 2 -> NO RESULT: скорее всего контейнеров этих приложений на
+    устройстве нет (владелец жертвы в PoC - его собственное тестовое
+    приложение, и в PoC сказано: сначала УСТАНОВИ И ОТКРОЙ жертву).
+
+ЧТО ИСПРАВЛЕНО:
+  1) identifier теперь печатается В ФАЙЛ (nk_mha_log_ident - Swift не
+     умеет вызывать вариативные C-функции, поэтому обёртка): без этого
+     мы не видели в логе, применена ли подпись на устройстве.
+  2) в список жертв добавлен наш собственный bundle id (com.dj.srk801) -
+     его контейнер точно существует, значит по нему мы поймём, работает ли
+     выдача extension'а вообще.
+
+СЛЕДУЮЩИЙ ШАГ ПО РЕЗУЛЬТАТУ:
+  - если для своего же id придёт token=present и writable=1 => механика
+    работает, и дальше надо найти УСТАНОВЛЕННОЕ приложение-жертву
+    (перебор установленных bundle id);
+  - если token=none и для своего id тоже => авторизация по identifier'у
+    не проходит: тогда проверяем, что именно ldid положил в
+    CodeDirectory (идентификатор в подписи vs в Info.plist), и пробуем
+    варианты ("com.apple.mobile.MobileHouseArrest" с/без префиксов).
+

