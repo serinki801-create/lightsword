@@ -49,7 +49,7 @@
                             nk_log(fmt, ##__VA_ARGS__); } while (0)
 
 #define HUNT_MAX_CALLS   60000u
-#define HUNT_MAX_SVC     8
+#define HUNT_MAX_SVC     40
 #define HUNT_MAX_CONN    16
 #define HUNT_NTABLES     4
 #define HUNT_NVALUES     12
@@ -64,7 +64,14 @@ static const uint32_t k_var_sizes[] = { 0x40, 0x80, 0x100, 0x400 };
 
 static const char *k_svcs[HUNT_MAX_SVC] = {
     "IOGPU", "IOGPUDevice", "AGXAcceleratorG14P", "IOGPUDeviceUserClient",
-    "AppleDCP", "IOAccelDevice", "IOAccelShared", "IOSurfaceRoot"
+    "AppleDCP", "IOAccelDevice", "IOAccelShared", "IOSurfaceRoot",
+    /* app-reachable clients of the kexts that carry the live write/read
+     * CVEs: AppleAVD/AVE2 (media engine), IOHIDFamily, IOSurface-
+     * Accelerator, IONVMeFamily, IODisplayPortFamily, IOUSBHostFamily */
+    "AppleAVD", "AppleAVE2", "AVD", "IOHIDEventSystemClient", "IOHIDDevice",
+    "IOHIDKeyboard", "IOSurfaceAccelerator", "IOAcceleratorService",
+    "IONVMeController", "AppleANS", "AppleDCP2", "IOUserEthernet",
+    "IOUSBDevice", "IOUSBDeviceHost", "AppleIDV", "AppleSPU"
 };
 static const uint32_t k_types[] = { 1, 33, 2, 5, 3, 4, 6, 0 };
 
