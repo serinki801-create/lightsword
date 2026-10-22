@@ -177,6 +177,13 @@ final class AppState: ObservableObject {
        Durable log: Documents/mcm.log */
     func mcmProbe() {
         start {
+            // The identifier we were signed with is exactly the string MCM
+            // authorises the caller by (ldid takes it from CFBundleIdentifier),
+            // so log it before the probe - the SPOOF_ID build must show the
+            // victim's bundle id here.
+            let bid = Bundle.main.bundleIdentifier ?? "?"
+            AppState.shared.append("IDENT: \(bid)")
+            nk_perm_probe_id(bid)
             nk_mcm_probe()
             return true
         }

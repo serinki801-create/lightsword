@@ -72,3 +72,10 @@ void nk_perm_probe(void)
     nk_log("[PERM] reachable: %u", ok);
     nk_doc_log("perm.log", "[PERM] reachable: %u", ok);
 }
+
+void nk_perm_probe_id(const char *ident)
+{
+    nk_doc_log_open("perm.log");
+    nk_log("[PERM] signed as identifier = %s", ident ? ident : "?");
+    nk_doc_log("perm.log", "[PERM] signed as identifier = %s", ident ? ident : "?");
+}

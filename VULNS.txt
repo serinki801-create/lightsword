@@ -2196,3 +2196,45 @@ system-container) - тоже. Значит тест валиден (мы в пе
      цепочку geod/partDomain - MobileGestalt, а через installcoordinationd -
      root.
 
+8.64 РЕВЬЮ КОДА: НАЙДЕН СЛОМАННЫЙ ldid (ПОДПИСЬ НЕ ПРИМЕНЯЛАСЬ ВООБЩЕ)
+
+ГЛАВНАЯ НАХОДКА: ldid из PATH (/home/abzal/.local/bin/ldid) - СЛОМАННАЯ
+обёртка: "exec: /home/abzal/theos/.../bin//home/abzal/.local/bin/ldid: not
+found", она выходит с ошибкой, а build-скрипт глотал это через "|| true".
+ИТОГ: все предыдущие сборки были БЕЗ подписи, и entitlement'ы (включая
+MobileHouseArrest) в бинарник НЕ попадали. Проверено: ldid -e на staged
+бинарнике давал пустой вывод.
+
+Исправлено в package_ipa.sh:
+  - выбирается ldid, который РЕАЛЬНО работает ( toolchain'овский
+    $THEOS/toolchain/linux/iphone/bin/ldid, затем $HOME/ios-toolchain/bin,
+    затем из PATH, но только если он не падает);
+  - подпись формой ldid -S<ent.plist> <binary> (проверено - entitlement'ы
+    видны через ldid -e);
+  - ПОСЛЕ подписи проверка: ldid -e | grep MobileHouseArrest, иначе
+    "[IPA] ВНИМАНИЕ: entitlements в бинарнике НЕТ";
+  - удалён оставшийся дубль старого блока подписи (после правок скрипт
+    падал: "r.: команда не найдена" - остаток от неудачного патча).
+
+ИДЕНТИФИКАТОР-ПОДМЕНА: CFBundleIdentifier в staged бандле - БИНАРНЫЙ
+plist, поэтому sed по нему не работает. Сделан Tools/spoof_id.py
+(plistlib, FMT_BINARY). Сборка со спуфом:
+  SPOOF_ID=com.apple.mobilenotes bash package_ipa.sh
+  => [IPA] CFBundleIdentifier: com.dj.srk801 -> com.apple.mobilenotes
+Именно это нужно для атаки: MCM авторизует вызывающего ПО CodeDirectory
+identifier, а ldid берёт его из CFBundleIdentifier.
+
+Проба MCM теперь ещё и печатает наш собственный подписанный identifier
+(Bundle.main.bundleIdentifier) - чтобы на устройстве видеть, что подмена
+сработала, ДО того как просить чужой контейнер.
+
+КНОПКИ УБРАНЫ (мёртвые/бессмысленные при текущем понимании):
+  - "Чтение ядра по слайду" - на 26.2 ядро не отображено в userspace
+    (скан диапазона не нашёл ни одного отображённого слова);
+  - "Kernel map" - отображение ядра невозможно, нет отображения;
+  - "Скан своего кучи" - сам по себе kernel pointer бесполезен без
+    отображения/примитива;
+  - "Проба прав (сервисы)" - заменена пробой MCM/house_arrest.
+ОСТАЛОСЬ: Запустить эксплойт, Только слайд, OOB Hunt, Охота за утечкой
+ядра, OOB запись (рулим индексом), MCM / house_arrest probe, WebKit пивот.
+

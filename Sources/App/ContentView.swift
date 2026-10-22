@@ -37,32 +37,8 @@ struct ContentView: View {
                         .disabled(state.running)
                     }
 
-                    VStack(spacing: 8) {
-                        Button {
-                            state.permProbe()
-                        } label: {
-                            Label(state.t("Permission probe (services)", "Проба прав (сервисы)"), systemImage: "lock.open")
-                        }
-                        .disabled(state.running)
-                    }
 
-                    VStack(spacing: 8) {
-                        Button {
-                            state.selfScan()
-                        } label: {
-                            Label(state.t("Self-scan (kernel ptr in our heap)", "Скан своего кучи (kernel ptr)"), systemImage: "magnifyingglass")
-                        }
-                        .disabled(state.running)
-                    }
 
-                    VStack(spacing: 8) {
-                        Button {
-                            state.kernelSelfRead()
-                        } label: {
-                            Label(state.t("Kernel self-read (slide)", "Чтение ядра по слайду"), systemImage: "memorychip")
-                        }
-                        .disabled(state.running)
-                    }
 
                     VStack(spacing: 8) {
                         Button {
@@ -82,14 +58,6 @@ struct ContentView: View {
                         .disabled(state.running)
                     }
 
-                    VStack(spacing: 8) {
-                        Button {
-                            state.kernMap()
-                        } label: {
-                            Label(state.t("Kernel map (leak -> mapping)", "Kernel map (утечка -> отображение)"), systemImage: "map")
-                        }
-                        .disabled(state.running)
-                    }
 
                     VStack(spacing: 8) {
                         Button {

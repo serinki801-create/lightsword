@@ -16,6 +16,7 @@
 #include "nk_trace.h"
 #include <mach/mach.h>
 #include <mach/bootstrap.h>
+#include <Security/Security.h>
 
 extern kern_return_t bootstrap_look_up(const char *name, mach_port_t *port);
 

