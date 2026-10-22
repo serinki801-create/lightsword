@@ -2238,3 +2238,31 @@ identifier, а ldid берёт его из CFBundleIdentifier.
 ОСТАЛОСЬ: Запустить эксплойт, Только слайд, OOB Hunt, Охота за утечкой
 ядра, OOB запись (рулим индексом), MCM / house_arrest probe, WebKit пивот.
 
+8.65 ПРОБА MCM: СПУФ РАБОТАЕТ, НО LOOKUP БЫЛ НЕВЕРНЫМ
+
+Прогон 15:50:
+  [PERM] signed as identifier = com.apple.mobilenotes   <- СПУФ СРАБОТАЕТ
+  [MCM] ... все 12 сервисов denied (kr=0x44c)
+
+Идентификатор в CodeDirectory теперь жертвы - подмена прошла (ldid берёт
+identifier из CFBundleIdentifier, и plistlib-перезапись отработала).
+
+"denied" здесь - МОЯ ошибка в API, а не отказ песочницы:
+bootstrap_look_up() ищет ТОЛЬКО в per-user домене, а house_arrest /
+containermanagerd живут в system-домене, поэтому lookup их не видел
+(BOOTSTRAP_UNKNOWN_SERVICE = 0x44c).
+
+Исправлено: сначала bootstrap_look_up_per_user(MACH_PORT_NULL, ...),
+затем bootstrap_look_up, затем xpc_connection_create_mach_service() -
+последний ищет сервис так же, как настоящие клиенты, и заодно даёт
+рабочее соединение для следующего шага (запрос VendContainer).
+
+Заголовки xpc/xpc.h в Theos-SDK отсутствуют (libxpc в libSystem), поэтому
+xpc_connection_create_mach_service и xpc_connection_cancel объявлены вручную.
+
+СЛЕДУЮЩИЙ ШАГ (когда увидим REACHABLE): реализовать обмен plist'ами с
+house_arrest: {"Command":"VendContainer","Identifier":"<чужой bundle id>",
+"ClientPlatform":"iPhone",...} для class-2/class-7 => MCM выдаст путь
+контейнера жертвы и sandbox extension. Формат сообщения берём из PoC
+(github.com/nepcukk/Darkgram).
+
