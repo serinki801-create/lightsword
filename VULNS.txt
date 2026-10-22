@@ -2412,3 +2412,25 @@ entitlement'ов, только identifier.
 проверяются оба part (0 и 3), а при успехе пишется файл-маркер
 в Documents жертвы (доказательство записи, а не только чтения).
 
+
+8.26 ЧТО ИМЕННО ВИДИТ ЯДРО (диагностика подписи)
+
+Прогон 17:47: identifier в бинарнике уже правильный, но
+  [SIG] com.apple.private.* = ABSENT, application-identifier = PRESENT (пусто),
+  [MHA] class13 -> path=... (MCM ОТВЕЧАЕТ) но token=none.
+Значит MCM нас слышит, а extension не выдаёт - нужна точная причина.
+
+Добавлено:
+  1) печать ЗНАЧЕНИЙ entitlement'ов (а не только PRESENT/ABSENT) - application-identifier
+     был PRESENT, но со значением в скобках пустым;
+  2) SecCodeCopySigningInformation через dlopen - спрашиваем у ЯДРА, какой
+     signing identifier он видит на нашем бинарнике (сравниваем с тем, что
+     в файле: должен быть com.apple.mobile.MobileHouseArrest);
+  3) тип значения (CFString/CFBoolean/CFData) печатается явно.
+
+ЕСЛИ application-identifier придёт пустым или != нашему - значит
+подпись переписывается при установке (LiveContainer переподписывает гостя, и
+тогда -I ldid не доживает до ядра). Тогда варианты: (а) попросить LiveContainer
+не переподписывать, (б) подписать так, чтобы identifier пережил
+переподпись (fake sign), (в) другой путь.
+
