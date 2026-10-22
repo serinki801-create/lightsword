@@ -167,6 +167,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* Self-scan: look for a kernel pointer in our own heap (IOKit objects
+       hold them). No vulnerability needed. Durable log:
+       Documents/group_oob.log */
+    func selfScan() {
+        start {
+            nk_iogpu_group_oob_run(9)
+            return true
+        }
+    }
+
     /* Kernel read-out probe: point the IOGPU copy-out at a buffer we own
        and see what the kernel writes into it. Durable log:
        Documents/group_oob.log */

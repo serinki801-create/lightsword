@@ -29,6 +29,15 @@ struct ContentView: View {
 
                     VStack(spacing: 8) {
                         Button {
+                            state.selfScan()
+                        } label: {
+                            Label(state.t("Self-scan (kernel ptr in our heap)", "Скан своего кучи (kernel ptr)"), systemImage: "magnifyingglass")
+                        }
+                        .disabled(state.running)
+                    }
+
+                    VStack(spacing: 8) {
+                        Button {
                             state.kernelSelfRead()
                         } label: {
                             Label(state.t("Kernel self-read (slide)", "Чтение ядра по слайду"), systemImage: "memorychip")
