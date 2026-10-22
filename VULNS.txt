@@ -1809,6 +1809,34 @@ IOKit-бага. Лог:
   [SCACHE] shared-cache hunt reads=N hits=M :: 0xADDR
   [SCACHE] header magic=0xfeedfacf cputype=0x... filetype=0x... ncmds=...
 
+
+8.52 ECHO GATE ПОДТВЕРЖДЁН: ПРОИЗВОЛЬНОЕ ЧТЕНИЕ/ЗАПИСЬ В РЕНДЕРЕ
+
+Прогон 13:45-13:46 - главный результат:
+  [RESULT] run=2 W-T2 echo addrof=0x000000010d8c0198 jscell=0x0100250700000001
+          probeElem=0x000000010d8c0198 wrote=0x4142434445464748
+          readback=0x4142434445464748 ECHO OK jsSees=true leakPass=0
+Записали 0x4142434445464748 ("ABCDEFGH") по произвольному адресу в
+адресном пространстве рендера и прочитали обратно. Произвольный r/w в
+WebContent ПОДТВЕРЖДЁН.
+
+Мои 32 "хита" в скане были ложными: 0xfffffff900000000, 0xffffffffffffffff
+- это NaN-боксы и sentinels, а не kernel VA. Фильтр переписан:
+настоящий kernel-указатель на arm64e - младшие 48 бит в диапазоне
+0xffff...., а PAC-сигнатура живёт ВЫШЕ них. Значит проверять надо
+(low48 >> 32) == 0xFFFF, плюс исключить NaN-боксы (0x7FF8/0xFFF8) и
+0xFFFFFFFFFFFFFFFF.
+
+Окна расширены: куча +/- 0x4000000 (64 МБ) с шагом 0x1000; охота за
+shared cache - по всему 32-битному userspace range 0x100000000..0x400000000
+с шагом 0x10000 и бюджетом 8 секунд (shared cache на iOS маппится высоко,
+0x1_8000_0000, рядом с нашей кучей его нет).
+
+Лог:
+  [KPTR] backend kptr scan base=0x... reads=N hits=M :: 0xADDR=0xVAL
+  [SCACHE] shared-cache hunt reads=N hits=M :: 0xADDR
+  [SCACHE] header magic=0xfeedfacf cputype=... filetype=... ncmds=...
+
 ================================================================================
  4. ПРИОРИТЕТ (обновлено 2026-10-20 21:05, AIO отложен по решению dj)
 ================================================================================
