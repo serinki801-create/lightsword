@@ -97,10 +97,16 @@ static int mha_dump_mcm_exports(void)
         nk_log("[MHA] MCM image: %s", name);
         const struct mach_header *mh = _dyld_get_image_header(i);
         if (!mh) continue;
-        struct segment_command_64 *seg = (struct segment_command_64 *)((uintptr_t)mh + sizeof(struct mach_header_64));
-        for (uint32_t s = 0; s < mh->ncmds; s++, seg++) {
-            if (seg->cmd != LC_SYMTAB) continue;
-            struct symtab_command *st = (struct symtab_command *)seg;
+        /* load commands have DIFFERENT sizes - stepping by
+         * sizeof(segment_command_64) walks off the end of the list, which
+         * is why the export dump came back empty. */
+        uint32_t off = (uint32_t)sizeof(struct mach_header_64);
+        for (uint32_t s = 0; s < mh->ncmds; s++) {
+            struct load_command *lc = (struct load_command *)((uintptr_t)mh + off);
+            if (lc->cmdsize == 0) break;
+            off += lc->cmdsize;
+            if (lc->cmd != LC_SYMTAB) continue;
+            struct symtab_command *st = (struct symtab_command *)lc;
             struct nlist_64 *ns = (struct nlist_64 *)((uintptr_t)mh + st->symoff);
             uint32_t n = st->nsyms;
             for (uint32_t k = 0; k < n; k++) {
@@ -183,10 +189,13 @@ void nk_mha_attack(void)
             if (!nm || !strstr(nm, "ontainermanager")) continue;
             const struct mach_header *mh = _dyld_get_image_header(i);
             if (!mh) continue;
-            struct segment_command_64 *sg = (struct segment_command_64 *)((uintptr_t)mh + sizeof(struct mach_header_64));
-            for (uint32_t s = 0; s < mh->ncmds; s++, sg++) {
-                if (sg->cmd != LC_SYMTAB) continue;
-                struct symtab_command *st = (struct symtab_command *)sg;
+            uint32_t off2 = (uint32_t)sizeof(struct mach_header_64);
+            for (uint32_t s = 0; s < mh->ncmds; s++) {
+                struct load_command *lc = (struct load_command *)((uintptr_t)mh + off2);
+                if (lc->cmdsize == 0) break;
+                off2 += lc->cmdsize;
+                if (lc->cmd != LC_SYMTAB) continue;
+                struct symtab_command *st = (struct symtab_command *)lc;
                 struct nlist_64 *ns = (struct nlist_64 *)((uintptr_t)mh + st->symoff);
                 for (uint32_t k = 0; k < st->nsyms; k++) {
                     if ((ns[k].n_type & N_TYPE) != N_SECT) continue;
