@@ -2434,3 +2434,22 @@ entitlement'ов, только identifier.
 не переподписывать, (б) подписать так, чтобы identifier пережил
 переподпись (fake sign), (в) другой путь.
 
+
+8.27 САЙДСТОР НЕЛЬЗЯ: ОН ПЕРЕПОДПИСЫВАЕТ И УБИВАЕТ ПРЕДУСЛОВИЕ
+
+SideStore/AltStore переподписывает IPA сертификатом пользователя =>
+CodeDirectory identifier становится TEAMID.com.dj.srk801, а entitlement'ы
+заменяются профилем. Предусловие эксплойта (identifier ==
+com.apple.mobile.MobileHouseArrest) уничтожается.
+=> Ставить через LiveContainer (нашу ldid-подпись он не трогает).
+
+Добавлено в mha_attack.c: полный дамп ЭКСПОРТОВ libsystem_containermanager
+(через _dyld_get_image_header + LC_SYMTAB):
+  [MHA] api: container_query_create
+  [MHA] api: container_query_set_identifiers
+  ...всё, что реально есть в библиотеке.
+Раньше мы гадали по именам функций (q_gids/q_part и т.п.); теперь увидим
+реальный API - включая варианты вроде container_query_get_results или
+функции перечисления, которые дадут СПИСОК контейнеров (то есть список
+установленных приложений, а не наш угаданный список жертв).
+

