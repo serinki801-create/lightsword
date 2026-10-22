@@ -2019,6 +2019,38 @@ AppleAVE2, IOHIDEventSystemClient, IOHIDDevice, IOHIDKeyboard,
 IOSurfaceAccelerator, IOAcceleratorService, IONVMeController, AppleANS,
 IOUSBDevice, IOUSBDeviceHost, AppleIDV, AppleSPU, IOUserEthernet.
 
+
+8.60 SANDBOX ПОТЕРЯЛ 20 ПРОВЕРОК - И ЕСТЬ ПРОВЕРОЧНЫЙ ТЕСТ БЕЗ БАГА
+
+Per-kext диф entitlement/сервис-строк между 18.x (kext_23a355) и 26.2
+(kext_23c55) - ВОТ ГДЕ БЫЛ ПРОПУЩЕННЫЙ ШАГ (общий диф по кернелкейшу
+ничего не показывал, а по кекстам - показывает):
+  com.apple.security.sandbox          2855 -> 2906, LOST=20, GAINED=71
+  com.apple.driver.AppleMobileFileIntegrity  207 -> 221, LOST=61
+
+20 потерянных строк sandbox - это имена СЕРВИСОВ, которые песочница
+раньше фильтровала:
+  com.apple.STExtractionService.privileged   <- "privileged"
+  com.apple.WebKit.Model
+  com.apple.cookied, com.apple.suggestd(.reminders), com.apple.corespotlight.,
+  com.apple.MobileAsset., com.apple.erm.status, com.apple.GameOverlayUI,
+  com.apple.BluetoothUIService, com.apple.EnergyKitService,
+  com.apple.UARPAssetManagerServiceMobileAsset,
+  com.apple.uikit.viewService.connectionRequest, ... (20 всего)
+
+ПРОВЕРОЧНЫЙ ТЕСТ (указатель не нужен, баг не нужен): сервис, к которому
+песочница разрешила доступ, находится через bootstrap_look_up() - если
+порт вернулся, значит песочница его НЕ отфильтровала. Это ровно форма
+CVE-2026-43689 ("a permissions issue ... may be able to gain root").
+
+Проба nk_perm_probe(), кнопка "Проба прав (сервисы)", лог Documents/perm.log:
+  [PERM] REACHABLE  com.apple.STExtractionService.privileged -> port=0x...
+  [PERM] denied     com.apple.cookied (kr=0x...)
+  [PERM] reachable: N
+Плюс контрольные имена (notification_center, diagnostics_relay,
+CoreTelephonyAgent, system-container) - если и они недоступны, значит мы
+действительно в песочнице и тест валиден.
+
 ================================================================================
  4. ПРИОРИТЕТ (обновлено 2026-10-20 21:05, AIO отложен по решению dj)
 ================================================================================

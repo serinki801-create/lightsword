@@ -29,6 +29,15 @@ struct ContentView: View {
 
                     VStack(spacing: 8) {
                         Button {
+                            state.permProbe()
+                        } label: {
+                            Label(state.t("Permission probe (services)", "Проба прав (сервисы)"), systemImage: "lock.open")
+                        }
+                        .disabled(state.running)
+                    }
+
+                    VStack(spacing: 8) {
+                        Button {
                             state.selfScan()
                         } label: {
                             Label(state.t("Self-scan (kernel ptr in our heap)", "Скан своего кучи (kernel ptr)"), systemImage: "magnifyingglass")

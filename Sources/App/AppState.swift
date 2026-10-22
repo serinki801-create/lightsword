@@ -170,6 +170,16 @@ final class AppState: ObservableObject {
     /* Self-scan: look for a kernel pointer in our own heap (IOKit objects
        hold them). No vulnerability needed. Durable log:
        Documents/group_oob.log */
+    /* Permission probe: which Mach services can this sandboxed app reach?
+       A service the sandbox no longer filters is the CVE-2026-43689 shape.
+       Durable log: Documents/perm.log */
+    func permProbe() {
+        start {
+            nk_perm_probe()
+            return true
+        }
+    }
+
     func selfScan() {
         start {
             nk_iogpu_group_oob_run(9)
