@@ -89,17 +89,50 @@ if [ -n "$LDID" ]; then
 </dict>
 </plist>
 ENTPLIST
-    if "$LDID" -S"$ENT_TMP" "$PAYLOAD/${APP_NAME}.app/$APP_NAME"; then
-        echo "[IPA] подписано ldid ($LDID) + entitlements"
+    # ldid does NOT read CFBundleIdentifier: it names the CodeDirectory
+    # after the EXECUTABLE ("srk801.a0cbb947.unsigned"). The MCM "identity
+    # trust" flaw authorises the caller by the CodeDirectory identifier, so
+    # it has to be set explicitly with -I.
+    SIGN_ARGS=()
+    [[ -n "${SPOOF_ID:-}" ]] && SIGN_ARGS+=("-I$SPOOF_ID")
+    if "$LDID" "${SIGN_ARGS[@]}" -S"$ENT_TMP" "$PAYLOAD/${APP_NAME}.app/$APP_NAME"; then
+        echo "[IPA] подписано ldid ($LDID) + entitlements${SPOOF_ID:+ + identifier=$SPOOF_ID}"
     else
         echo "[IPA] WARN: ldid -S<ent> не отработал, пробую без entitlements" >&2
-        "$LDID" -S "$PAYLOAD/${APP_NAME}.app/$APP_NAME" || echo "[IPA] WARN: подпись не удалась" >&2
+        "$LDID" "${SIGN_ARGS[@]}" -S "$PAYLOAD/${APP_NAME}.app/$APP_NAME" || echo "[IPA] WARN: подпись не удалась" >&2
     fi
     # verify: the entitlements MUST be in the binary
     if "$LDID" -e "$PAYLOAD/${APP_NAME}.app/$APP_NAME" 2>/dev/null | grep -q "MobileHouseArrest"; then
         echo "[IPA] entitlements ПОДТВЕРЖДЕНЫ в бинарнике"
     else
         echo "[IPA] ВНИМАНИЕ: entitlements в бинарнике НЕТ" >&2
+    fi
+    # the CodeDirectory identifier is what MCM authorises the caller by
+    CD_IDENT=$(python3 - "$PAYLOAD/${APP_NAME}.app/$APP_NAME" <<'PYEOF'
+import struct, sys
+d = open(sys.argv[1], 'rb').read()
+m, n = struct.unpack_from('<II', d, 0)
+off = 32; so = None
+for _ in range(n):
+    c, cs = struct.unpack_from('<II', d, off)
+    if c == 0x1d: so, = struct.unpack_from('<I', d, off + 8)
+    off += cs
+if so is None:
+    print("(no signature)"); raise SystemExit
+b = d[so:]
+_, _, cnt = struct.unpack_from('>III', b, 0)
+for i in range(cnt):
+    t, bo = struct.unpack_from('>II', b, 12 + i * 8)
+    if t == 0:
+        cd = b[bo:]
+        _, _, _, _, _, io = struct.unpack_from('>IIIIII', cd, 0)
+        print(cd[io:cd.index(b"\0", io)].decode('utf-8', 'replace'))
+        break
+PYEOF
+)
+    echo "[IPA] CodeDirectory identifier = $CD_IDENT"
+    if [[ -n "${SPOOF_ID:-}" && "$CD_IDENT" != "$SPOOF_ID" ]]; then
+        echo "[IPA] ВНИМАНИЕ: identifier не совпал с SPOOF_ID ($SPOOF_ID)" >&2
     fi
 else
     echo "[IPA] WARN: рабочий ldid не найден - приложение останется без подписи." >&2

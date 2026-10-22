@@ -2382,3 +2382,33 @@ class 13 отдаёт правильный путь, но token=none => extensio
      не доехала, и это объяснит всё разом;
   3) SecTask.h/SecCode.h в iOS-SDK нет - функции объявлены вручную.
 
+
+8.25 КЛЮЧЕВОЙ ФИКС: CodeDirectory identifier задаётся через ldid -I
+
+Прогон 16:43 показал: [SIG] com.apple.mobile.MobileHouseArrest = ABSENT.
+Разбор подписи нашей сборки (LC_CODE_SIGNATURE -> SuperBlob -> CSSLOT
+CodeDirectory) дал:
+  CodeDirectory identifier = 'srk801.a0cbb947.unsigned'
+то есть ldid ВООБЩЕ НЕ ЧИТАЕТ CFBundleIdentifier: он называет
+CodeDirectory по ИМЕНИ БИНАРНИКА (+ .<hash>.unsigned для ad-hoc).
+Проверено на чистой копии: ldid -S даёт identifier = 'prog'/'srk801' независимо
+от plist (и от того, XML он или бинарный).
+
+НО у ldid есть опция -I: ldid -I<identifier> -S<ent.plist> <binary> даёт
+CodeDirectory identifier ровно как задано. Исправлено в package_ipa.sh:
+  SIGN_ARGS=(); [[ -n "$SPOOF_ID" ]] && SIGN_ARGS+=("-I$SPOOF_ID")
+  + проверка после подписи: разбор CodeDirectory и сверка с SPOOF_ID.
+Сборка теперь подтверждает:
+  [IPA] CodeDirectory identifier = com.apple.mobile.MobileHouseArrest
+
+ПОЧЕМУ ЭТО КРИТИЧНО: баг CVE-2026-43689 - MCM авторизует вызывающего
+ПО CodeDirectory identifier, а не по bundle id. Значит спуф identifier'а и
+есть сам эксплойт. Права com.apple.private.* ядро при установке вырезает
+(остаются get-task-allow и application-identifier) - но PoC
+ johnny (0xjohnnydev/MobileHouseArrest-PoC) и не требует приватных
+entitlement'ов, только identifier.
+
+Проба доведена по PoC: жертвы расширены списком, для class 13
+проверяются оба part (0 и 3), а при успехе пишется файл-маркер
+в Documents жертвы (доказательство записи, а не только чтения).
+

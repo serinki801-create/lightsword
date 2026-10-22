@@ -39,8 +39,14 @@ void nk_sig_dump(void)
     for (uint32_t i = 0; ents[i]; i++) {
         CFStringRef k = CFStringCreateWithCString(NULL, ents[i], kCFStringEncodingUTF8);
         CFTypeRef v = SecTaskCopyValueForEntitlement(task, k, NULL);
-        nk_log("[SIG] entitlement %-58s = %s", ents[i],
-               v ? "PRESENT" : "ABSENT");
+        char vb[256] = {0};
+        if (v && CFGetTypeID(v) == CFBooleanGetTypeID())
+            snprintf(vb, sizeof(vb), "%s",
+                     CFBooleanGetValue((CFBooleanRef)v) ? "true" : "false");
+        else if (v && CFGetTypeID(v) == CFStringGetTypeID())
+            CFStringGetCString((CFStringRef)v, vb, sizeof(vb), kCFStringEncodingUTF8);
+        nk_log("[SIG] entitlement %-58s = %s%s", ents[i], v ? "PRESENT" : "ABSENT",
+               vb[0] ? " (" : "", vb[0] ? vb : "");
         if (v) CFRelease(v);
         CFRelease(k);
     }
