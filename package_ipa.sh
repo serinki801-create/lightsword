@@ -23,7 +23,10 @@ echo "[IPA] make package FINALPACKAGE=1 ..."
 # Theos refuses project paths with spaces: ALL make steps run through the
 # space-free symlink (same inode, so .theos/ staging lands in $PROJ anyway).
 LINK="/tmp/opencode/jb26link"
-if [[ ! -e "$LINK" ]]; then ln -s "$PROJ" "$LINK"; fi
+if [[ ! -e "$LINK" ]]; then
+    mkdir -p "$(dirname "$LINK")"          # /tmp can be wiped between runs
+    ln -s "$PROJ" "$LINK"
+fi
 if ! (cd "$LINK" && make package FINALPACKAGE=1 "${MAKE_EXTRA[@]}"); then
     echo "[IPA] WARN: make package упал — пробую голый make (без переупаковку)..."
     (cd "$LINK" && make clean >/dev/null 2>&1) || true
