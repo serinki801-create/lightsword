@@ -28,6 +28,16 @@ struct ContentView: View {
                     .disabled(state.running)
 
                     VStack(spacing: 8) {
+                    VStack(spacing: 8) {
+                        Button {
+                            state.mcmProbe()
+                        } label: {
+                            Label(state.t("MCM / house_arrest probe", "Проба MCM / house_arrest"), systemImage: "shippingbox")
+                        }
+                        .disabled(state.running)
+                    }
+
+                    VStack(spacing: 8) {
                         Button {
                             state.permProbe()
                         } label: {
@@ -91,6 +101,8 @@ struct ContentView: View {
                     }
 
 
+
+                    }
 
                     NavigationLink(destination: {
                         WebKitStageView()

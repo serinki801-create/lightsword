@@ -173,6 +173,15 @@ final class AppState: ObservableObject {
     /* Permission probe: which Mach services can this sandboxed app reach?
        A service the sandbox no longer filters is the CVE-2026-43689 shape.
        Durable log: Documents/perm.log */
+    /* MCM / house_arrest reachability with the new entitlements.
+       Durable log: Documents/mcm.log */
+    func mcmProbe() {
+        start {
+            nk_mcm_probe()
+            return true
+        }
+    }
+
     func permProbe() {
         start {
             nk_perm_probe()

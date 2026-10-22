@@ -2138,3 +2138,61 @@ system-container) - тоже. Значит тест валиден (мы в пе
   3. Регресс 18.x <-> 26.2 по этим методам (Tools/regress/): исчезнувшая
      проверка = CVE.
 
+8.63 CVE-2026-43689 = "Red Wedding": MCM / house_arrest ДОВЕРЯЕТ IDENTIFIER'У
+
+Найден публичный writeup (Хабр, автор DarkGramForIOS, PoC слит johnny/@0xjohnny,
+репозитории github.com/nepcukk): https://habr.com/ru/articles/1069316/
+Это ТОТ ЖЕ класс, что и CWE-862 / "permissions issue" из advisory.
+
+СУТЬ (кластер вокруг containermanagerd = MCM и sandbox extensions):
+  Bug 1 (patched): house_arrest. Entitlement com.apple.mobile.MobileHouseArrest
+    позволяет процессу просить у MCM контейнеры "от имени file sharing".
+    MCM авторизовал ПО CODE DIRECTORY IDENTIFIER вызывающего - а identifier
+    при dev/ad-hoc подписи задаётся произвольно. Итог: приложение с этим
+    entitlement получает ЧУЖОЙ контейнер (class-2) и ЧУЖУЮ app group
+    (class-7), и MCM выписывает sandbox extension на путь жертвы.
+    Отдельная ветка class-13 ведёт в кэш MobileGestalt.
+  Bug 2 (patched): com.apple.geod, класс контейнера 12 ("built-in allowed"),
+    невалидированный параметр partDomain перенаправлял выданный
+    sandbox extension (уже с R/W) в системную группу MobileGestalt:
+      /private/var/containers/Shared/SystemGroup/
+        systemgroup.com.apple.mobilegestaltcache/Library/Caches/
+        com.apple.MobileGestalt.plist
+    => чтение/запись живого MG-кэша = устройство начинает считать себя
+    чем угодно.
+  Bug 3 (entry patched, логика осталась): installcoordinationd. Приложение
+    подкладывало свой promise graph в каталоги состояния демона, демон
+    восстанавливал его как доверенный и при материализации InfoPlist.strings
+    шёл по ФИНАЛЬНОМУ СИМЛИНКУ => "привилегированный демон пишет куда я
+    скажу" = root.
+  Bug 4 (still present в 27 beta 5): cfprefsd - TOCTOU на сыром пути
+    контейнера + symlink mismatch => контролируемое создание пустого файла
+    (0644, 0 байт) по выбранному пути.
+
+В НАШЕМ БИЛДЕ (23C55) все строки есть:
+  com.apple.containermanagerd, com.apple.containermanagerd.system
+  com.apple.private.MobileContainerManager.allowed
+  com.apple.private.security.storage.MobileContainerManager
+  com.apple.rootless.storage.MobileContainerManager
+  house_arrest
+
+ЧТО СДЕЛАНО:
+  1) Подпись ldid теперь с entitlement'ами (ad-hoc => мы контролируем и
+     entitlements, и CodeDirectory identifier - ровно условие бага):
+       com.apple.mobile.MobileHouseArrest
+       com.apple.private.MobileContainerManager.allowed
+       com.apple.private.security.storage.MobileContainerManager
+       com.apple.rootless.storage.MobileContainerManager
+       com.apple.private.security.container-required = false
+       platform-application, get-task-allow
+  2) Новая проба nk_mcm_probe(), кнопка "Проба MCM / house_arrest",
+     лог Documents/mcm.log: bootstrap_look_up по 12 кандидатам
+     (containermanagerd, house_arrest, geod, installcoordinationd,
+     cfprefsd, ...). REACHABLE = сервис отвечает => путь открыт.
+  3) СЛЕДУЮЩИЙ ШАГ (когда увидим REACHABLE): реализовать обмен plist'ами
+     с house_arrest: {"Command":"VendContainer", "Identifier": "<чужой
+     bundle id>", ...} + class-2/class-7 => MCM выдаст путь контейнера
+     жертвы и sandbox extension. Дальше - R/W чужих контейнеров, а через
+     цепочку geod/partDomain - MobileGestalt, а через installcoordinationd -
+     root.
+
