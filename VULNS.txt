@@ -1781,6 +1781,34 @@ v128inst.exports.s(fakeHeader, containerAddr + 8n), и читает по ЯЧЕ�
 
 Старый скан объектов отключён ("pre-phase scan skipped").
 
+
+8.51 СКАН ПЕРЕВЕДЁН НА backend.read64 + ОХОТА ЗА SHARED CACHE
+
+Прогон 12:55: PHASE 2 OK (ms=349), но cell scan дал reads=0. Причина:
+чтение через readElement требует ОБЪЕКТ нужного типа (double-cell) -
+на произвольных адресах элемент не читается (undefined).
+
+Ключевая находка в harness: в PHASE 2 бутстрапится
+  backend.read64 / backend.write64
+- ровно то произвольное 8-байтовое чтение/запись в адресном пространстве
+рендера, которого мы добивались (строки 703-729, _bootstrap_read64/
+_bootstrap_write64).
+
+Скан переписан на backend.read64 и повешен сразу после PHASE 2:
+  scanForKptrsWithBackend(lo, hi, step)  - ищет значения с (v>>48)&0xFFFF
+  findSharedCache(lo, hi, step)         - ищет Mach-O заголовок 0xFEEDFACF
+Оба - по 0x100 / 0x1000, окно +/-0x400000 от addrof(executorRef).
+Если shared cache найден - читаем его заголовок (magic/cputype/filetype/
+ncmds) через тот же read64.
+
+ПОЧЕМУ SHARED CACHE - ЭТО ЯДРО: он отображён в каждом процессе, включая
+рендере, и на iOS в нём лежат ТЕКСТ и ДАННЫЕ ЯДРА. Найдя его, мы читаем
+сегмент данных ядра напрямую из рендера - это чтение ядра без всякого
+IOKit-бага. Лог:
+  [KPTR] backend kptr scan base=0x... reads=N hits=M :: 0xADDR=0xVAL
+  [SCACHE] shared-cache hunt reads=N hits=M :: 0xADDR
+  [SCACHE] header magic=0xfeedfacf cputype=0x... filetype=0x... ncmds=...
+
 ================================================================================
  4. ПРИОРИТЕТ (обновлено 2026-10-20 21:05, AIO отложен по решению dj)
 ================================================================================
