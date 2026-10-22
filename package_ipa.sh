@@ -73,22 +73,23 @@ for cand in "$THEOS/toolchain/linux/iphone/bin/ldid" "$HOME/ios-toolchain/bin/ld
 done
 if [ -n "$LDID" ]; then
     ENT_TMP="$(mktemp -d)/ent.plist"
-    cat > "$ENT_TMP" <<'ENTPLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>com.apple.mobile.MobileHouseArrest</key><true/>
-    <key>application-identifier</key><string>$SPOOF_ID</string>
-    <key>com.apple.private.MobileContainerManager.allowed</key><true/>
-    <key>com.apple.private.security.storage.MobileContainerManager</key><true/>
-    <key>com.apple.rootless.storage.MobileContainerManager</key><true/>
-    <key>com.apple.private.security.container-required</key><false/>
-    <key>platform-application</key><true/>
-    <key>get-task-allow</key><true/>
-</dict>
-</plist>
-ENTPLIST
+    python3 - "$ENT_TMP" "${SPOOF_ID:-com.dj.srk801}" <<'PYEOF'
+import sys, plistlib
+path, ident = sys.argv[1], sys.argv[2]
+pl = {
+    "com.apple.mobile.MobileHouseArrest": True,
+    "application-identifier": ident,
+    "com.apple.private.MobileContainerManager.allowed": True,
+    "com.apple.private.security.storage.MobileContainerManager": True,
+    "com.apple.rootless.storage.MobileContainerManager": True,
+    "com.apple.private.security.container-required": False,
+    "platform-application": True,
+    "get-task-allow": True,
+}
+with open(path, 'wb') as f:
+    plistlib.dump(pl, f, fmt=plistlib.FMT_XML)
+print("[IPA] ent.plist written, application-identifier = " + ident)
+PYEOF
     # ldid does NOT read CFBundleIdentifier: it names the CodeDirectory
     # after the EXECUTABLE ("srk801.a0cbb947.unsigned"). The MCM "identity
     # trust" flaw authorises the caller by the CodeDirectory identifier, so

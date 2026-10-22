@@ -2118,6 +2118,31 @@ write даёт 8 нулевых байт по управляемому смещ�
   - exploit.js: отправляет каждый backend kptr hit через
     window.webkit.messageHandlers.nkBridge.postMessage("KPTR " + addr).
 
+
+
+8.30 КЛЮЧЕВОЙ ФИКС: application-identifier был ЛИТЕРАЛОМ "$SPOOF_ID"
+
+Прогон 17:47 показал:
+  [SIG] application-identifier = PRESENT ( )   <- ПУСТОЕ значение!
+
+Причина: в package_ipa.sh entitlements генерировались heredoc'ом с
+КВОТАМИ <<'ENTPLIST', поэтому $SPOOF_ID НЕ раскрывался => в plist
+лежало literally "$SPOOF_ID", а ldid читал его как пустую строку
+(или отклонял).
+
+Исправлено: plist генерируется через plistlib.dump() из python, где
+ident = sys.argv[2] = "${SPOOF_ID:-com.dj.srk801}" - реальная строка.
+
+Теперь:
+  [IPA] ent.plist written, application-identifier = com.apple.mobile.MobileHouseArrest
+  [IPA] подписано ldid ... + entitlements + identifier=com.apple.mobile.MobileHouseArrest
+  [IPA] entitlements ПОДТВЕРЖДЕНЫ в бинарнике
+  [IPA] CodeDirectory identifier = com.apple.mobile.MobileHouseArrest
+
+Сборки:
+  srk801_20261022-184829.ipa  (identifier com.dj.srk801, для разведки)
+  srk801_20261022-184829.ipa  (identifier com.apple.mobile.MobileHouseArrest, для атаки)
+
 ================================================================================
  4. ПРИОРИТЕТ (обновлено 2026-10-20 21:05, AIO отложен по решению dj)
 ================================================================================

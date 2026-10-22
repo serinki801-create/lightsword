@@ -14,40 +14,12 @@ struct ContentView: View {
             List {
                 Section {
                     Button {
-                        state.run()
+                        state.mhaAttack()
                     } label: {
-                        Label(state.t("Run Exploit", "Запустить эксплойт"), systemImage: "bolt.fill")
+                        Label(state.t("MHA attack (container escape)", "MHA атака (выход из контейнера)"), systemImage: "bolt.shield")
                     }
                     .disabled(state.running)
 
-                    Button {
-                        state.slideOnly()
-                    } label: {
-                        Label(state.t("Slide Only", "Только слайд"), systemImage: "scope")
-                    }
-                    .disabled(state.running)
-
-                    VStack(spacing: 8) {
-
-
-
-
-
-
-
-
-
-
-                    }
-
-                    VStack(spacing: 8) {
-                        Button {
-                            state.mhaAttack()
-                        } label: {
-                            Label(state.t("MHA attack (container escape)", "MHA атака (выход из контейнера)"), systemImage: "bolt.shield")
-                        }
-                        .disabled(state.running)
-                    }
 
                     NavigationLink(destination: {
                         WebKitStageView()
