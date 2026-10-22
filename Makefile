@@ -9,7 +9,7 @@ APPLICATION_NAME = srk801
 SRC := $(PWD)/Sources
 srk801_FILES = $(shell find $(SRC) -type f \( -name '*.c' -o -name '*.m' \))
 srk801_SWIFT_FILES = $(shell find $(SRC) -type f -name '*.swift')
-srk801_FRAMEWORKS = UIKit Foundation CoreGraphics IOKit WebKit Metal IOSurface
+srk801_FRAMEWORKS = UIKit Foundation CoreGraphics IOKit WebKit Metal IOSurface Security
 srk801_CFLAGS = -fobjc-arc -Wno-deprecated-declarations \
 	-I$(SRC)/Core -I$(SRC)/Diag -I$(SRC)/Probes -I$(SRC)/Kernel -I$(SRC)/Legacy
 srk801_SWIFTFLAGS = -import-objc-header $(PWD)/Bridging-Header.h \

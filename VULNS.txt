@@ -2365,3 +2365,20 @@ escape)", лог Documents/mha.log:
 ИСПРАВЛЕНИЯ: в список жертв добавлен наш собственный (спуфленный)
 идентификатор; class 13 проверяется с двумя part (0 и 3).
 
+
+8.69 ДИАГНОСТИКА ПОДПИСИ + application-identifier
+
+Прогон 16:33: class 2 -> NO RESULT даже для нашего собственного (спуфленного)
+идентификатора, чей контейнер точно существует => дело не в жертве.
+class 13 отдаёт правильный путь, но token=none => extension не выписан.
+
+Добавлено:
+  1) в entitlement'ы - application-identifier = $SPOOF_ID: системные
+     демоны идентифицируют вызывающего по application-identifier,
+     а не по CodeDirectory (у PoC про CodeDirectory, но у ad-hoc
+     подписи это разные строки);
+  2) nk_sig_dump(): печатает entitlement'ы, КОТОРЫЕ ВИДИТ ЯДРО
+     (SecTaskCopyValueForEntitlement) - если их нет, значит подпись
+     не доехала, и это объяснит всё разом;
+  3) SecTask.h/SecCode.h в iOS-SDK нет - функции объявлены вручную.
+

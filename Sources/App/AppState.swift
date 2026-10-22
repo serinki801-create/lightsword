@@ -184,6 +184,7 @@ final class AppState: ObservableObject {
             let bid = Bundle.main.bundleIdentifier ?? "?"
             AppState.shared.append("IDENT: \(bid)")
             nk_mha_log_ident(bid)
+            nk_sig_dump()
             nk_mha_attack()
             return true
         }

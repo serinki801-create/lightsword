@@ -79,6 +79,7 @@ if [ -n "$LDID" ]; then
 <plist version="1.0">
 <dict>
     <key>com.apple.mobile.MobileHouseArrest</key><true/>
+    <key>application-identifier</key><string>$SPOOF_ID</string>
     <key>com.apple.private.MobileContainerManager.allowed</key><true/>
     <key>com.apple.private.security.storage.MobileContainerManager</key><true/>
     <key>com.apple.rootless.storage.MobileContainerManager</key><true/>
