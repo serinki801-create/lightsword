@@ -38,6 +38,24 @@ struct ContentView: View {
 
                     VStack(spacing: 8) {
                         Button {
+                            state.kernLeakHunt()
+                        } label: {
+                            Label(state.t("Kernel leak hunt (all clients)", "Охота за утечкой ядра (все клиенты)"), systemImage: "eye.trianglebadge.exclamationmark")
+                        }
+                        .disabled(state.running)
+                    }
+
+                    VStack(spacing: 8) {
+                        Button {
+                            state.kernMap()
+                        } label: {
+                            Label(state.t("Kernel map (leak -> mapping)", "Kernel map (утечка -> отображение)"), systemImage: "map")
+                        }
+                        .disabled(state.running)
+                    }
+
+                    VStack(spacing: 8) {
+                        Button {
                             state.groupOobSteer()
                         } label: {
                             Label(state.t("OOB write (steer index)", "OOB запись (рулим индексом)"), systemImage: "scope")
@@ -46,14 +64,6 @@ struct ContentView: View {
                     }
 
 
-                    VStack(spacing: 8) {
-                        Button {
-                            state.aioUaf()
-                        } label: {
-                            Label(state.t("AIO kevent UAF (kernel leak)", "AIO kevent UAF (утечка ядра)"), systemImage: "flame.circle")
-                        }
-                        .disabled(state.running)
-                    }
 
                     NavigationLink(destination: {
                         WebKitStageView()
