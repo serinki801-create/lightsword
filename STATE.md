@@ -59,3 +59,58 @@
   "NECP Data-Only Chain")
 - "Матрица capacity" -> Documents/cap_matrix.log
 - Логи: /home/abzal/jailbreak 26/Test-main/VULNS.txt (история), этот файл.
+
+
+## Обновление 22.10 10:55 — закрыт маршрут read-out, найден новый класс CVE
+
+### ЗАКРЫТО: IOGPU read-out (cmd 0/128) не даёт утечку
+Формат команды восстановлен полностью:
+  struct[0]   = команда (0 / 3 / 64 / 128 / 130)
+  struct[24]  = ТОКЕН 0..15 (НЕ указатель! align_up(x,4) проверяет <16)
+  struct[56]  = приёмник (указатель пользователя)
+  struct[64]  = id ресурса
+  struct[72]  = != 0
+cmd=0 с токеном 0 принимается (kr=0) и возвращает запись:
+  OUT+0x000 = счётчики      OUT+0x008 = указатель на буфер 0x4000
+  OUT+0x010 = хендл группы  OUT+0x028 = 0x4000
+  OUT+0x030 = константа      OUT+0x038 = инкрементный id группы (0x30122...)
+Буфер данных группы читается (16 КБ, отображён в процесс), но ПУСТ - состояние
+группы ядро в userspace не публикует. Слот группы - сплошная заливка
+ff 00 00 00, kernel-указателей нет. МАРШРУТ ЗАКРЫТ.
+
+### ЖИВЫЕ CVE В 23C55 (по advisory Apple, все <27)
+  CVE-2026-86903  Kernel, OOB read, чтение kernel memory, фикс iOS 27.0.1
+  CVE-2026-43689  permissions issue, даёт ROOT, фикс 26.7
+  CVE-2026-43655  IOSurfaceAccelerator, OOB read, чтение kernel memory, 26.7
+  CVE-2026-43654  OOB read, disclose kernel memory, 26.7
+  CVE-2026-65349  OOB read, чтение kernel memory, фикс 26.6.1
+  CVE-2026-28991  OOB read, improved bounds checking, 26.5
+  CVE-2026-28897  APFS, buffer overflow, ЗАПИСЬ kernel memory, 26.5
+  CVE-2026-28972  OOB WRITE, запись kernel memory, 26.5
+  CVE-2026-24524  IOGPU, 24257 (у нас закрыт гейтом типа)
+
+### ИНСТРУМЕНТЫ ДЛЯ ПОИСКА ЧТЕНИЯ ЯДРА (готовы)
+  1. hunt/kext_23c55/       23 кекста из 23C55 (бинарники)
+  2. hunt/blocks/23c55_*.tsv  dispatch-таблицы кекстов:
+       kext|table|stride|argN|selector|handler|мнемоники
+     (IOHIDFamily 35, IOUSBHostFamily 75, IOSurface 75,
+      IOMobileGraphicsFamily 72, IODisplayPortFamily 34, IONVMeFamily 21,
+      IOGPUFamily 76, AppleAVE2 16, AppleAVD 11, apfs 42, ...)
+  3. hunt/tables_23c55.txt.json  карта chained-fixups: 412608 записей
+     (слот -> цель), по ней ищутся таблицы; сегменты кернелкейша читаются
+     (Mach-O по смещению 0, __DATA_CONST 0xfffffff007a6c000)
+  4. Tools/regress/  регресс-скан (0 удалённых проверок в 22 кекстах)
+  5. Sources/Legacy/oob_ar_tables.h  реальная арность IOGPU-методов
+  6. Sources/Legacy/oob_hunt.c  arity-correct хантер + ДЕТЕКТОР KERNEL VA
+     (с маской PAC)
+
+### ПЛАН
+  A. Расширить таблицы арности на IOHIDFamily / IOUSBHostFamily / IOSurface /
+     AppleAVD через карту chained-fixups + blocks/*.tsv, и гонять охоту с
+     детектором kernel VA по этим клиентам -> это прямой поиск OOB read
+     (CVE-2026-86903-подобного) в кекстах, где он жив.
+  B. AIO kevent UAF - фиксы (пиннинг CPU, файл 0x10000, ожидание
+     завершения reclaim) ещё не проверялись на устройстве.
+  C. OOB WRITE примитив (remove из хеш-таблицы группы, 0x9f518ac): путь
+     подтверждён (дубль-insert принят), смещение рулится свойствами
+     IOSurface; цель не выбрана - нужен якорь KASLR из A или B.
