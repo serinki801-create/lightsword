@@ -28,48 +28,25 @@ struct ContentView: View {
                     .disabled(state.running)
 
                     VStack(spacing: 8) {
-                    VStack(spacing: 8) {
-                        Button {
-                            state.mcmProbe()
-                        } label: {
-                            Label(state.t("MCM / house_arrest probe", "Проба MCM / house_arrest"), systemImage: "shippingbox")
-                        }
-                        .disabled(state.running)
-                    }
 
 
 
 
-                    VStack(spacing: 8) {
-                        Button {
-                            state.oobHunt()
-                        } label: {
-                            Label(state.t("OOB hunt v2 (arity-correct)", "OOB hunt v2 (по арности)"), systemImage: "scope")
-                        }
-                        .disabled(state.running)
+
+
+
+
+
+
                     }
 
                     VStack(spacing: 8) {
                         Button {
-                            state.kernLeakHunt()
+                            state.mhaAttack()
                         } label: {
-                            Label(state.t("Kernel leak hunt (all clients)", "Охота за утечкой ядра (все клиенты)"), systemImage: "eye.trianglebadge.exclamationmark")
+                            Label(state.t("MHA attack (container escape)", "MHA атака (выход из контейнера)"), systemImage: "bolt.shield")
                         }
                         .disabled(state.running)
-                    }
-
-
-                    VStack(spacing: 8) {
-                        Button {
-                            state.groupOobSteer()
-                        } label: {
-                            Label(state.t("OOB write (steer index)", "OOB запись (рулим индексом)"), systemImage: "scope")
-                        }
-                        .disabled(state.running)
-                    }
-
-
-
                     }
 
                     NavigationLink(destination: {
