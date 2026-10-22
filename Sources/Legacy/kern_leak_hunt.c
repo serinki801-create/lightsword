@@ -190,60 +190,62 @@ __attribute__((unused)) static const kl_shape_t k_kl_shapes[] = {
  * the HID system, the SEP and the rest. */
 static void kl_registry_sweep(void)
 {
-    /* IORegistryCreateIterator does not exist in the iOS SDK and the
-     * registry iterator it makes is not a plain io_iterator_t, so
-     * IOIteratorNext on it returns nothing. The API the iOS SDK documents
-     * is IORegistryEntryCreateIterator, and IOIteratorNext does work on
-     * its handle. It also walks the tree lazily, so the cost is bounded by
-     * how many entries we look at.
-     *
-     * IOServiceMatching(NULL) is NOT usable: it materialises every service
-     * in the registry at once and the device stalls. */
-    io_iterator_t iter = 0;
-    kern_return_t kr = IORegistryEntryCreateIterator(
-        kIOMasterPortDefault, kIOServicePlane, kIORegistryIterateRecursively, &iter);
-    if (kr != KERN_SUCCESS || !iter) {
-        klf("[KL] registry iterator failed (kr=0x%x)", kr);
+    /* The previous version opened a user client on EVERY service it walked
+     * and that killed the app (the log ended right at "named phase
+     * conns=15"). So: walk and LOG the service names only - that part is
+     * read-only and safe - and open clients in a second, targeted pass
+     * over the names that look like user clients. */
+    CFMutableDictionaryRef m = IOServiceMatching(NULL);
+    if (!m) { klf("[KL] no registry match"); return; }
+    io_iterator_t it = 0;
+    if (IOServiceGetMatchingServices(kIOMasterPortDefault, m, &it) != KERN_SUCCESS) {
+        klf("[KL] registry walk failed");
         return;
     }
-    static const uint32_t reg_types[] = { 0, 1, 2 };
-    io_registry_entry_t ent;
-    uint32_t seen = 0, opened = 0, since_yield = 0;
+    static const char *want[] = {
+        "HID", "USB", "AVD", "AVE2", "Surface", "Display", "NVMe", "GPU",
+        "Accel", "DCP", "Ethernet", "GameController", "SPU", "IDV", "HIDTransport",
+        "Accessory", "Framebuffer", "IOGPU", "AGX"
+    };
+    io_service_t svc;
+    uint32_t seen = 0, matched = 0;
     struct timespec t0, tnow;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    while ((ent = (io_registry_entry_t)IOIteratorNext(iter)) != 0) {
+    while ((svc = IOIteratorNext(it))) {
         seen++;
-        if (seen > 300) { IOObjectRelease(ent); break; }
-        /* hard time budget: the watchdog is not optional */
+        if (seen > 600) break;
         clock_gettime(CLOCK_MONOTONIC, &tnow);
         double dt = (double)(tnow.tv_sec - t0.tv_sec) + 1e-6 * (double)(tnow.tv_nsec - t0.tv_nsec);
-        if (dt > 20.0) { IOObjectRelease(ent); klf("[KL] registry walk: time budget hit"); break; }
+        if (dt > 15.0) { klf("[KL] registry walk: time budget hit"); break; }
         char nm[128] = {0};
         io_name_t onm = {0};
-        if (IORegistryEntryGetName(ent, onm) == KERN_SUCCESS)
+        if (IORegistryEntryGetName(svc, onm) == KERN_SUCCESS)
             strncpy(nm, (const char *)onm, sizeof(nm) - 1);
-        for (size_t t = 0; t < sizeof(reg_types)/sizeof(reg_types[0]); t++) {
-            io_connect_t c = MACH_PORT_NULL;
-            if (IOServiceOpen(ent, mach_task_self(), reg_types[t], &c) == KERN_SUCCESS && c) {
-                if (g_kl_nconns < KL_MAX_CONN) {
-                    g_kl_conns[g_kl_nconns].svc = kl_name_intern(nm[0] ? nm : "?");
-                    g_kl_conns[g_kl_nconns].type = reg_types[t];
-                    g_kl_conns[g_kl_nconns].conn = c;
-                    klf("[KL] REG OPEN %s type=%u conn[%u]",
-                        g_kl_conns[g_kl_nconns].svc, reg_types[t], g_kl_nconns);
-                    g_kl_nconns++;
-                    opened++;
-                } else {
-                    IOServiceClose(c);
+        int hit = 0;
+        for (size_t w = 0; w < sizeof(want)/sizeof(want[0]); w++)
+            if (strstr(nm, want[w])) { hit = 1; break; }
+        if (hit) {
+            matched++;
+            klf("[KL] CANDIDATE service: %s", nm);
+            for (size_t t = 0; t < sizeof(k_kl_types)/sizeof(k_kl_types[0]); t++) {
+                io_connect_t c = MACH_PORT_NULL;
+                if (IOServiceOpen(svc, mach_task_self(), k_kl_types[t], &c) == KERN_SUCCESS && c) {
+                    if (g_kl_nconns < KL_MAX_CONN) {
+                        g_kl_conns[g_kl_nconns].svc = kl_name_intern(nm);
+                        g_kl_conns[g_kl_nconns].type = k_kl_types[t];
+                        g_kl_conns[g_kl_nconns].conn = c;
+                        klf("[KL] REG OPEN %s type=%u conn[%u]", nm, k_kl_types[t], g_kl_nconns);
+                        g_kl_nconns++;
+                    } else {
+                        IOServiceClose(c);
+                    }
                 }
-                since_yield++;
             }
         }
-        if (since_yield >= 20) { since_yield = 0; usleep(3000); }
-        IOObjectRelease(ent);
+        IOObjectRelease(svc);
     }
-    IOObjectRelease(iter);
-    klf("[KL] registry walk: services=%u opened=%u", seen, opened);
+    IOObjectRelease(it);
+    klf("[KL] registry walk: services=%u candidates=%u opened=%u", seen, matched, g_kl_nconns);
 }
 
 static void kl_call(kl_conn_t *cn, uint32_t sel, const kl_shape_t *sh,
