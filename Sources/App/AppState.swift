@@ -157,6 +157,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* Kernel self-read: the app process has the kernel mapped at
+       0xfffffff0_... + slide, so a plain memcpy reads the kernel's data
+       segment. No bug needed. Durable log: Documents/group_oob.log */
+    func kernelSelfRead() {
+        start {
+            nk_iogpu_group_oob_run(8)
+            return true
+        }
+    }
+
     /* Kernel read-out probe: point the IOGPU copy-out at a buffer we own
        and see what the kernel writes into it. Durable log:
        Documents/group_oob.log */

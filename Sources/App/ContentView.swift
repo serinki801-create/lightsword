@@ -29,6 +29,15 @@ struct ContentView: View {
 
                     VStack(spacing: 8) {
                         Button {
+                            state.kernelSelfRead()
+                        } label: {
+                            Label(state.t("Kernel self-read (slide)", "Чтение ядра по слайду"), systemImage: "memorychip")
+                        }
+                        .disabled(state.running)
+                    }
+
+                    VStack(spacing: 8) {
+                        Button {
                             state.oobHunt()
                         } label: {
                             Label(state.t("OOB hunt v2 (arity-correct)", "OOB hunt v2 (по арности)"), systemImage: "scope")

