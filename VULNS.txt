@@ -2346,3 +2346,22 @@ escape)", лог Documents/mha.log:
     CodeDirectory (идентификатор в подписи vs в Info.plist), и пробуем
     варианты ("com.apple.mobile.MobileHouseArrest" с/без префиксов).
 
+
+8.68 СПУФ НА УСТРОЙСТВЕ ПОДТВЕРЖДЁН; ТЕСТИРУЕМ СВОЙ ID И ОБА part
+
+Прогон 16:27:
+  [MHA] IDENT = com.apple.mobile.MobileHouseArrest     <- подпись на устройстве
+  [MHA] victim=com.dj.srk801 -> NO RESULT
+  [MHA] class13 -> path=.../Library/Caches
+  [MHA]   token=none
+
+ВЫВОДЫ:
+  1) СПУФ РАБОТАЕТ - identifier в подписи именно тот, что требует PoC.
+  2) class 2 -> NO RESULT даже для com.dj.srk801 - ожидаемо: мы
+     подменили свой идентификатор, значит наш контейнер теперь
+     com.apple.mobile.MobileHouseArrest - а его мы и не спрашивали.
+  3) class 13: путь правильный, token=none => extension не выдан.
+
+ИСПРАВЛЕНИЯ: в список жертв добавлен наш собственный (спуфленный)
+идентификатор; class 13 проверяется с двумя part (0 и 3).
+
