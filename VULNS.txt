@@ -2111,3 +2111,30 @@ system-container) - тоже. Значит тест валиден (мы в пе
   /home/abzal/ios262_lab/       лаборатория: IPSW, kernelcache 26.2+26.3,
                                 дизассемблеры кекстов, SPTM-бинарь
 ================================================================================
+8.62 CVE-2026-43689: CWE-862 MISSING AUTHORIZATION, КОМПОНЕНТ = KERNEL
+
+Точные данные:
+  CWE-862 Missing Authorization
+  CVSS 3.1: 7.8 (AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H)
+  "A permissions enforcement flaw allows a malicious application to
+   elevate its privileges to root"
+  Компонент: KERNEL (одна из 16 kernel-уязвимостей iOS 26.7)
+  Публичных эксплойтов нет (EPSS <1%, не в KEV) - ищем сами в 23C55.
+  Фикс: "additional restrictions" (26.7 / 27).
+
+Это НЕ утечка: это конкретный путь, где привилегированное действие
+выполняется без проверки прав вызывающего. Указатель не нужен.
+
+ГДЕ ИСКАТЬ (план нашими инструментами):
+  1. IOKit-клиенты 23 кекстов: метод вызывает привилегированный
+     примитив (IOMemoryDescriptor / IOMapper / setProperty / task_for_pid /
+     mach_vm_map) и НЕ зовёт проверку авторизации
+     (getProperty / entitlement / isEntitled / checkAccess).
+     Дизасмы и dispatch-таблицы есть.
+  2. ioctl-обработчики ядра, доступные песочнице: IOSurfaceRoot,
+     AppleAVD/AppleAVE2, IONVMeFamily, AppleHIDTransport,
+     IOUSBHostFamily - паттерн "привилегированное действие, проверяется
+     только права файла, но не entitlement'ы задачи".
+  3. Регресс 18.x <-> 26.2 по этим методам (Tools/regress/): исчезнувшая
+     проверка = CVE.
+
