@@ -195,11 +195,20 @@ static void kl_registry_sweep(void)
      * conns=15"). So: walk and LOG the service names only - that part is
      * read-only and safe - and open clients in a second, targeted pass
      * over the names that look like user clients. */
-    CFMutableDictionaryRef m = IOServiceMatching(NULL);
-    if (!m) { klf("[KL] no registry match"); return; }
+    /* IOServiceGetMatchingServices(NULL) materialises EVERY service in one
+     * go - on this build that alone kills the app (the log ended right at
+     * "named phase conns=15", before a single line of the walk). The
+     * iOS-documented API walks the same tree lazily:
+     *   IORegistryEntryCreateIterator(kIOMasterPortDefault, kIOServicePlane,
+     *                                 kIORegistryIterateRecursively, &it)
+     * and IOIteratorNext() on its handle. */
     io_iterator_t it = 0;
-    if (IOServiceGetMatchingServices(kIOMasterPortDefault, m, &it) != KERN_SUCCESS) {
-        klf("[KL] registry walk failed");
+    kern_return_t kr = IORegistryEntryCreateIterator(kIOMasterPortDefault,
+                                                     kIOServicePlane,
+                                                     kIORegistryIterateRecursively,
+                                                     &it);
+    if (kr != KERN_SUCCESS || !it) {
+        klf("[KL] registry iterator failed (kr=0x%x)", kr);
         return;
     }
     static const char *want[] = {
