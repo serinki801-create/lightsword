@@ -13,25 +13,38 @@ struct ContentView: View {
         NavigationStack {
             List {
                 Section {
-                    Button {
-                        state.mhaAttack()
+                    Menu {
+                        Button("ImageIO · malloc") { state.run86950(mode: 0, heap: true) }
+                        Button("ImageIO · alloca") { state.run86950(mode: 0, heap: false) }
+                        Button("CGPDF · malloc")   { state.run86950(mode: 1, heap: true) }
+                        Button("CGFont · show-glyphs") { state.run86950(mode: 2, heap: true) }
                     } label: {
-                        Label(state.t("MHA attack (container escape)", "MHA атака (выход из контейнера)"), systemImage: "bolt.shield")
+                        Label(state.t("CVE-2026-86950 (CG glyph OOB)", "CVE-2026-86950 (CG glyph OOB)"), systemImage: "textformat")
                     }
                     .disabled(state.running)
 
+                    Text(state.cve86950Status)
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(.secondary)
+
+                    Button {
+                        state.scalerProbe()
+                    } label: {
+                        Label(state.t("Scaler / Accelerator probe", "Проба Scaler / Accelerator"), systemImage: "scale.3d")
+                    }
+                    .disabled(state.running)
 
                     NavigationLink(destination: {
                         WebKitStageView()
                     }, label: {
-                        Label(state.t("WebKit pivot", "WebKit пивот"), systemImage: "safari")
+                        Label(state.t("WebKit pivot (renderer AAR/AAW)", "WebKit пивот (AAR/AAW в рендере)"), systemImage: "safari")
                     })
 
                 } header: {
                     Label(state.t("Actions", "Действия"), systemImage: "play.circle")
                 } footer: {
-                    Text(state.t("**Slide Only** — KASLR detection. **Run Exploit** — the full chain. **AIO kevent UAF** — the live 23C55 bug: a reclaimed aio_workq_entry read back through kevent64, plus the double free behind it. **WebKit pivot** — the renderer stage.",
-                         "**Только слайд** — определение KASLR. **Запустить эксплойт** — полная цепочка. **AIO kevent UAF** — живой баг 23C55: освобождённая aio_workq_entry читается обратно через kevent64, и double-free за ним. **WebKit пивот** — стадия рендера."))
+                    Text(state.t("**86950** — live CoreGraphics glyph OOB, runs in-process or in the renderer. **WebKit pivot** — live renderer with arbitrary read/write (echo gate).",
+                         "**86950** — живой CoreGraphics glyph OOB, работает в приложении или рендере. **WebKit пивот** — живой рендер с произвольным чтением/записью (echo gate)."))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

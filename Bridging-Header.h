@@ -3,6 +3,10 @@
 #include "nk_home.h"
 #include "nk_state_machine.h"
 #include "nk_trace.h"
+#include "aio_chain.h"
+#include "krw_v3.h"
+#include "cve86950.h"
+#include "scaler_probe.h"
 
 void nk_async_main(void (^block)(void));
 void nk_async_background(void (^block)(void));
